@@ -1,3 +1,5 @@
+![Delegate Control for ChatGPT](docs/images/readme-cover.png)
+
 # Delegate Control for ChatGPT
 
 Delegate Control for ChatGPT（DCFC）是一个 Windows 桌面控制客户端，用于管理本机的 ChatGPT Delegate MCP 服务和安全隧道。

@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Delegate Control for ChatGPT - README Cover</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 1600px;
+      height: 900px;
+      margin: 0;
+      overflow: hidden;
+      background: #07100f;
+    }
+
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      color: #f3f8f6;
+    }
+
+    .cover {
+      position: relative;
+      width: 1600px;
+      height: 900px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 78% 48%, rgba(25, 139, 147, 0.24), transparent 37%),
+        linear-gradient(125deg, #07100f 0%, #0b1715 48%, #10201d 100%);
+      isolation: isolate;
+    }
+
+    .cover::before {
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      content: "";
+      opacity: 0.12;
+      background-image:
+        linear-gradient(rgba(156, 197, 191, 0.16) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(156, 197, 191, 0.16) 1px, transparent 1px);
+      background-size: 72px 72px;
+      mask-image: linear-gradient(90deg, transparent, black 28%, black 100%);
+    }
+
+    .cover::after {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 7px;
+      content: "";
+      background: linear-gradient(90deg, #17b9c8 0 35%, #6bd4d9 35% 48%, #8ed5c7 48% 63%, #17b9c8 63% 100%);
+    }
+
+    .brand-panel {
+      position: absolute;
+      top: 104px;
+      left: 104px;
+      z-index: 3;
+      width: 620px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 58px;
+    }
+
+    .brand-icon {
+      width: 58px;
+      height: 58px;
+      border: 1px solid rgba(174, 224, 219, 0.28);
+      border-radius: 13px;
+      background: #101e1c;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+    }
+
+    .brand-code {
+      color: #a5bbb7;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 10px;
+      border-radius: 50%;
+      background: #24c7d4;
+      box-shadow: 0 0 0 6px rgba(36, 199, 212, 0.13);
+    }
+
+    .eyebrow {
+      margin-bottom: 18px;
+      color: #77d8dd;
+      font-size: 17px;
+      font-weight: 750;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      color: #f7fbfa;
+      font-family: "Bahnschrift", "Segoe UI", sans-serif;
+      font-size: 70px;
+      font-weight: 760;
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    h1 span {
+      display: block;
+      margin-top: 12px;
+      color: #d8e3df;
+    }
+
+    .subtitle {
+      margin: 34px 0 0;
+      color: #f0f6f3;
+      font-size: 30px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .description {
+      max-width: 540px;
+      margin: 20px 0 0;
+      color: #9fb3af;
+      font-size: 20px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+
+    .feature-line {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 42px;
+      color: #c5d4d0;
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    .feature-line i {
+      width: 34px;
+      height: 1px;
+      background: #34c3ce;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 52px;
+    }
+
+    .tag {
+      min-width: 92px;
+      padding: 11px 18px;
+      border: 1px solid rgba(168, 211, 205, 0.22);
+      border-radius: 6px;
+      color: #c9d8d4;
+      background: rgba(18, 37, 34, 0.72);
+      font-size: 14px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .product-stage {
+      position: absolute;
+      top: 104px;
+      right: -102px;
+      z-index: 2;
+      width: 920px;
+      height: 684px;
+      perspective: 1600px;
+    }
+
+    .product-stage::before {
+      position: absolute;
+      right: 90px;
+      bottom: -34px;
+      width: 700px;
+      height: 110px;
+      content: "";
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.44);
+      filter: blur(28px);
+      transform: rotate(-3deg);
+    }
+
+    .window {
+      position: absolute;
+      inset: 26px 0 0 0;
+      overflow: hidden;
+      border: 1px solid rgba(202, 231, 227, 0.34);
+      border-radius: 20px;
+      background: #f6f9f7;
+      box-shadow:
+        -20px 42px 90px rgba(0, 0, 0, 0.54),
+        0 0 0 10px rgba(111, 199, 196, 0.035);
+      transform: rotateY(-7deg) rotateX(1.5deg) rotateZ(0.4deg);
+      transform-origin: center right;
+    }
+
+    .window-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 54px;
+      padding: 0 22px;
+      color: #54706b;
+      background: #eef4f1;
+      border-bottom: 1px solid #d9e4e0;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 8px;
+    }
+
+    .window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #a9bbb7;
+    }
+
+    .window-dot:first-child {
+      background: #1cb8c5;
+    }
+
+    .window-label {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .window-label strong {
+      color: #213b37;
+    }
+
+    .window-screen {
+      width: 100%;
+      height: calc(100% - 54px);
+      object-fit: cover;
+      object-position: top left;
+      display: block;
+    }
+
+    .rail-label {
+      position: absolute;
+      right: 90px;
+      bottom: 12px;
+      z-index: 4;
+      color: rgba(216, 237, 233, 0.64);
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      letter-spacing: 0.12em;
+    }
+  </style>
+</head>
+<body>
+  <main class="cover">
+    <section class="brand-panel">
+      <div class="brand-lockup">
+        <img class="brand-icon" src="../../src-tauri/icons/icon.png" alt="" />
+        <div class="brand-code"><span class="status-dot"></span>DCFC / WINDOWS</div>
+      </div>
+
+      <div class="eyebrow">ChatGPT Connector Console</div>
+      <h1>Delegate Control<span>for ChatGPT</span></h1>
+      <p class="subtitle">ChatGPT Delegate 桌面控制客户端</p>
+      <p class="description">按需管理本地 MCP 服务与安全隧道，让连接状态、凭据和进程生命周期集中在一个原生窗口中。</p>
+
+      <div class="feature-line"><i></i>按需启动 · 安全凭据 · 系统托盘</div>
+
+      <div class="tags" aria-label="Technology tags">
+        <span class="tag">Windows</span>
+        <span class="tag">Tauri</span>
+        <span class="tag">MCP</span>
+        <span class="tag">Secure Tunnel</span>
+      </div>
+    </section>
+
+    <section class="product-stage" aria-label="Delegate Control application preview">
+      <div class="window">
+        <div class="window-bar">
+          <div class="window-dots">
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+          </div>
+          <div class="window-label"><strong>Delegate Control</strong><span>LOCAL SESSION</span></div>
+        </div>
+        <img class="window-screen" src="readme-cover-source.png" alt="Delegate Control for ChatGPT application" />
+      </div>
+      <div class="rail-label">LOCAL MCP · SECURE TUNNEL · CREDENTIAL MANAGER</div>
+    </section>
+  </main>
+</body>
+</html>
