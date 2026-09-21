@@ -1,0 +1,33 @@
+# Dependencies and frontend output
+node_modules/
+dist/
+
+# Rust and Tauri build output
+src-tauri/target/
+
+# Local desktop-test environments and evidence
+.client-test/
+artifacts/
+
+# Local planning/runtime output
+docs/superpowers/
+*.log
+logs/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+settings.json
+runtime-api-key.xml
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
