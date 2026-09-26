@@ -6,38 +6,52 @@ const outputDir = path.join(__dirname, "..", "artifacts", "visual-check");
 fs.mkdirSync(outputDir, { recursive: true });
 
 const status = {
-  overall: "running",
+  overall: "stopped",
   proxy_ready: true,
+  router_ready: false,
   mcp_proxy_ready: true,
-  mcp_ready: true,
-  tunnel_ready: true,
-  proxy_pid: 24680,
-  mcp_pid: 38768,
-  tunnel_pid: 13388,
+  mcp_ready: false,
+  tunnel_ready: false,
+  proxy_pid: null,
+  router_pid: null,
+  mcp_pid: null,
+  tunnel_pid: null,
   credential_configured: true,
-  message: "ChatGPT Delegate 连接已建立。",
-  projects: [{ project_id: "default", name: "默认项目", output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation", overall: "running", mcp_ready: true, mcp_pid: 38768, message: "项目 MCP 已就绪。" }],
+  text_editing_available: true,
+  connector_capability_message: "当前 MCP 支持项目内文本文件编辑。",
+  message: "连接仅在需要时启动。",
+  projects: [
+    { project_id: "screencast", name: "ScreenCast", output_directory: "D:\\Projects\\ScreenCast\\docs\\product-design-handoff", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "new-project", name: "Realize", output_directory: "D:\\Projects\\workflow\\docs\\product-designer-handoff", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "new-project-2", name: "DCFC", output_directory: "D:\\Projects\\Delegate Control for ChatGPT\\docs\\product-designer-handoff", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+  ],
 };
 const settings = {
   proxy_host: "127.0.0.1",
   proxy_port: 7897,
   mcp_proxy_host: "127.0.0.1",
   mcp_proxy_port: 8100,
+  router_port: 8101,
   health_port: 8080,
   health_host: "127.0.0.1",
   profile_name: "chatgpt-delegate",
   mcp_executable: "C:\\Users\\Redmi\\.local\\bin\\chatgpt-delegate.exe",
   proxy_executable: "C:\\Users\\Redmi\\.local\\bin\\mcp-proxy.exe",
   proxy_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
+  router_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\router-projects.json",
   tunnel_executable: "D:\\tunnel-client\\install\\tunnel-client.exe",
-  projects: [{ id: "default", name: "默认项目", output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation", mcp_host: "127.0.0.1", mcp_port: 8000, enabled: true }],
-  active_project_id: "default",
+  projects: [
+    { id: "screencast", name: "ScreenCast", output_directory: "D:\\Projects\\ScreenCast\\docs\\product-design-handoff", mcp_host: "127.0.0.1", mcp_port: 8002, enabled: true },
+    { id: "new-project", name: "Realize", output_directory: "D:\\Projects\\workflow\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8000, enabled: true },
+    { id: "new-project-2", name: "DCFC", output_directory: "D:\\Projects\\Delegate Control for ChatGPT\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8001, enabled: true },
+  ],
+  active_project_id: "new-project-2",
 };
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
   const results = [];
-  for (const viewport of [{ width: 980, height: 680 }, { width: 760, height: 580 }]) {
+  for (const viewport of [{ width: 1180, height: 800 }, { width: 900, height: 700 }]) {
     const page = await browser.newPage({ viewport });
     await page.addInitScript(({ status, settings }) => {
       let callbackId = 1;
@@ -52,7 +66,7 @@ const settings = {
         convertFileSrc(filePath) { return filePath; },
         async invoke(command) {
           if (["get_status", "start_delegate", "stop_delegate", "start_all_projects", "stop_all_projects", "start_project", "stop_project"].includes(command)) return status;
-          if (command === "get_settings" || command === "save_settings") return settings;
+          if (command === "get_settings" || command === "save_settings" || command === "migrate_project_key") return settings;
           if (command === "read_logs") return "INFO  MCP server ready on 127.0.0.1:8000/mcp\nINFO  Secure tunnel connected\nINFO  Connector status: ready";
           if (command.includes("plugin:event")) return 1;
           return null;
@@ -61,12 +75,16 @@ const settings = {
     }, { status, settings });
     await page.goto("http://127.0.0.1:1420", { waitUntil: "networkidle" });
     await page.waitForTimeout(800);
+    await page.getByRole("button", { name: "设置" }).click();
+    await page.waitForTimeout(200);
+    await page.getByRole("button", { name: "更改 key" }).first().click();
+    await page.waitForTimeout(200);
     const metrics = await page.evaluate(() => ({
       viewport: { width: innerWidth, height: innerHeight },
       body: { width: document.body.scrollWidth, height: document.body.scrollHeight },
       root: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
-      powerButton: (() => {
-        const element = document.querySelector(".power-button");
+      migrationPanel: (() => {
+        const element = document.querySelector(".project-key-migration");
         if (!element) return null;
         const rect = element.getBoundingClientRect();
         return { width: rect.width, height: rect.height, left: rect.left, top: rect.top };
@@ -76,7 +94,7 @@ const settings = {
         .map((element) => element.textContent?.trim())
         .filter(Boolean),
     }));
-    const name = `overview-${viewport.width}x${viewport.height}.png`;
+    const name = `project-key-settings-${viewport.width}x${viewport.height}.png`;
     await page.screenshot({ path: path.join(outputDir, name), fullPage: true });
     results.push({ name, metrics });
     await page.close();

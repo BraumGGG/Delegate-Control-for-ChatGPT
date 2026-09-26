@@ -23,6 +23,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "6.1.1",
+    "playwright": "^1.63.0",
     "typescript": "latest",
     "vite": "8.3.0"
   }

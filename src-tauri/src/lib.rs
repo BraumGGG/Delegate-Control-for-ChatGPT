@@ -77,6 +77,7 @@ pub fn run() {
             commands::stop_project,
             commands::get_settings,
             commands::save_settings,
+            commands::migrate_project_key,
             commands::save_runtime_key,
             commands::read_logs,
             commands::open_log_directory,

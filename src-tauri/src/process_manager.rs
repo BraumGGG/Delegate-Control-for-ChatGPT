@@ -197,6 +197,11 @@ impl ProcessManager {
 
     pub fn log_dir(&self) -> &Path { &self.log_dir }
 
+    pub fn is_stopped(&mut self) -> bool {
+        self.refresh_process_state();
+        self.projects.is_empty() && self.router.is_none() && self.proxy.is_none() && self.tunnel.is_none()
+    }
+
     fn refresh_connector_capability(&mut self, executable: &str) {
         if self.connector_capability_path.as_deref() == Some(executable) {
             return;
@@ -429,6 +434,7 @@ mod tests {
     #[test]
     fn stopped_manager_has_no_pids() {
         let mut manager = ProcessManager::new(PathBuf::from("target/test-logs"));
+        assert!(manager.is_stopped());
         let status = manager.status(&AppSettings::default());
         assert_eq!(status.overall, OverallState::Stopped);
         assert!(status.mcp_pid.is_none());

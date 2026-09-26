@@ -14,6 +14,24 @@ const NAV_ITEMS = [
   { id: "settings" as const, label: "设置", icon: Settings2 },
 ];
 
+type DraftProjectKey = { value: string; automatic: boolean };
+
+const PROJECT_KEY_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,63})$/;
+
+function suggestProjectKey(name: string, usedIds: Iterable<string>) {
+  const used = new Set(usedIds);
+  const normalized = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+  const base = normalized || "project";
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    const suffixText = `-${suffix}`;
+    candidate = `${base.slice(0, 64 - suffixText.length)}${suffixText}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function stateCopy(status: DelegateStatus) {
   if (status.overall === "running") return { eyebrow: "LINK ESTABLISHED", title: "连接已建立", tone: "online" };
   if (status.overall === "starting") return { eyebrow: "ESTABLISHING LINK", title: "正在建立连接", tone: "working" };
@@ -41,6 +59,9 @@ function App() {
   const [logs, setLogs] = useState("等待日志数据...");
   const [runtimeKey, setRuntimeKey] = useState("");
   const [showKey, setShowKey] = useState(false);
+  const [draftProjectKeys, setDraftProjectKeys] = useState<Record<string, DraftProjectKey>>({});
+  const [migrationProjectId, setMigrationProjectId] = useState<string | null>(null);
+  const [migrationKey, setMigrationKey] = useState("");
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api.getStatus()); } catch (cause) { setError(String(cause)); }
@@ -72,7 +93,7 @@ function App() {
   const copy = useMemo(() => stateCopy(status), [status]);
   const isRunning = status.overall === "running" || status.overall === "starting";
   const selectedProject = settings?.projects.find((project) => project.id === selectedProjectId) ?? settings?.projects[0];
-  const settingsDirty = settings !== null && savedSettings !== null && JSON.stringify(settings) !== JSON.stringify(savedSettings);
+  const settingsDirty = settings !== null && savedSettings !== null && (JSON.stringify(settings) !== JSON.stringify(savedSettings) || Object.keys(draftProjectKeys).length > 0);
 
   async function handlePower(action: "start" | "stop" | "restart") {
     if (busy) return;
@@ -103,9 +124,25 @@ function App() {
     if (!settings) return;
     setBusy(true); setError("");
     try {
-      const saved = await api.saveSettings({ ...settings, active_project_id: selectedProjectId });
+      const idMapping = new Map<string, string>();
+      const usedIds = new Set(settings.projects.filter((project) => !draftProjectKeys[project.id]).map((project) => project.id));
+      const projects = settings.projects.map((project) => {
+        const draft = draftProjectKeys[project.id];
+        if (!draft) return project;
+        const projectKey = draft.value.trim();
+        if (!PROJECT_KEY_PATTERN.test(projectKey)) throw new Error(`项目“${project.name || "未命名项目"}”的 Project Key 无效。请使用小写字母、数字、短横线或下划线，长度不超过 64。`);
+        if (usedIds.has(projectKey)) throw new Error(`Project Key 已存在：${projectKey}`);
+        usedIds.add(projectKey);
+        idMapping.set(project.id, projectKey);
+        return { ...project, id: projectKey };
+      });
+      const committedSelection = selectedProjectId ? idMapping.get(selectedProjectId) ?? selectedProjectId : null;
+      const saved = await api.saveSettings({ ...settings, projects, active_project_id: committedSelection });
       setSettings(saved);
       setSavedSettings(saved);
+      setSelectedProjectId(committedSelection);
+      setLogProjectId((current) => current ? idMapping.get(current) ?? current : saved.projects[0]?.id ?? null);
+      setDraftProjectKeys({});
       setNotice(isRunning ? "设置已保存。项目目录、端口或启用状态将在重启连接后生效。" : "设置已保存。启用项目后可以同时启动。");
     } catch (cause) { setError(String(cause)); } finally { setBusy(false); }
   }
@@ -121,20 +158,30 @@ function App() {
     setSettings({ ...settings, projects: settings.projects.map((project) => project.id === id ? { ...project, ...patch } : project) });
   }
 
+  function updateProjectName(id: string, name: string) {
+    if (!settings) return;
+    updateProject(id, { name });
+    const draft = draftProjectKeys[id];
+    if (!draft?.automatic) return;
+    const usedIds = [
+      ...settings.projects.filter((project) => project.id !== id && !draftProjectKeys[project.id]).map((project) => project.id),
+      ...Object.entries(draftProjectKeys).filter(([projectId]) => projectId !== id).map(([, value]) => value.value),
+    ];
+    setDraftProjectKeys((current) => ({ ...current, [id]: { value: suggestProjectKey(name, usedIds), automatic: true } }));
+  }
+
   function addProject() {
     if (!settings) return;
-    const base = "new-project";
-    const usedIds = new Set(settings.projects.map((project) => project.id));
-    let id = base;
-    let suffix = 2;
-    while (usedIds.has(id)) { id = `${base}-${suffix}`; suffix += 1; }
+    const id = `draft-${Date.now()}`;
+    const proposedKey = suggestProjectKey("project", [...settings.projects.map((project) => project.id), ...Object.values(draftProjectKeys).map((value) => value.value)]);
     const usedPorts = new Set(settings.projects.map((project) => project.mcp_port));
     let port = 8000;
     while (usedPorts.has(port) || port === settings.mcp_proxy_port || port === settings.router_port || port === settings.health_port) port += 1;
-    const project: ProjectConfig = { id, name: "新项目", output_directory: "C:\\Projects\\new-project", mcp_host: "127.0.0.1", mcp_port: port, enabled: false };
+    const project: ProjectConfig = { id, name: "新项目", output_directory: `C:\\Projects\\${proposedKey}`, mcp_host: "127.0.0.1", mcp_port: port, enabled: false };
     setSettings({ ...settings, projects: [...settings.projects, project], active_project_id: id });
+    setDraftProjectKeys((current) => ({ ...current, [id]: { value: proposedKey, automatic: true } }));
     setSelectedProjectId(id);
-    setNotice("已添加项目，请选择输出目录并保存设置。");
+    setNotice("已添加项目。请确认项目名称、Project Key 和输出目录后保存。");
   }
 
   function removeProject(id: string) {
@@ -145,6 +192,26 @@ function App() {
     const next = projects[0]?.id ?? null;
     setSettings({ ...settings, projects, active_project_id: next });
     setSelectedProjectId(next);
+    setDraftProjectKeys((current) => { const nextDrafts = { ...current }; delete nextDrafts[id]; return nextDrafts; });
+    if (migrationProjectId === id) { setMigrationProjectId(null); setMigrationKey(""); }
+  }
+
+  async function handleMigrateProjectKey(projectId: string) {
+    if (!settings) return;
+    if (status.overall !== "stopped") { setError("迁移 Project Key 前必须先停止全部项目连接。"); return; }
+    if (settingsDirty) { setError("当前设置尚未保存。请先保存其他修改，再迁移 Project Key。"); return; }
+    const newKey = migrationKey.trim();
+    if (!PROJECT_KEY_PATTERN.test(newKey)) { setError("新的 Project Key 无效。请使用小写字母、数字、短横线或下划线，长度不超过 64。"); return; }
+    setProjectBusy(projectId); setError(""); setNotice("");
+    try {
+      const saved = await api.migrateProjectKey(projectId, newKey);
+      setSettings(saved); setSavedSettings(saved);
+      setSelectedProjectId((current) => current === projectId ? newKey : current);
+      setLogProjectId((current) => current === projectId ? newKey : current);
+      setMigrationProjectId(null); setMigrationKey("");
+      setNotice(`Project Key 已从 ${projectId} 迁移为 ${newKey}。ChatGPT 历史调用中的旧 key 需要手动更新。`);
+      await refreshStatus();
+    } catch (cause) { setError(String(cause)); } finally { setProjectBusy(null); }
   }
 
   async function chooseDirectory(id: string) {
@@ -195,7 +262,7 @@ function App() {
         {view === "logs" && <div className="view logs-view"><div className="view-heading"><div><span className="eyebrow">RUNTIME TRACE</span><h1>运行日志</h1></div><button className="secondary-button" onClick={() => void api.openLogDirectory()}><FolderOpen size={18} />打开目录</button></div><div className="segmented-control" role="tablist"><button className={logSource === "mcp" ? "is-active" : ""} onClick={() => setLogSource("mcp")}><Server size={16} />项目 MCP</button><button className={logSource === "router" ? "is-active" : ""} onClick={() => setLogSource("router")}><Server size={16} />Router MCP</button><button className={logSource === "proxy" ? "is-active" : ""} onClick={() => setLogSource("proxy")}><Network size={16} />MCP Proxy</button><button className={logSource === "tunnel" ? "is-active" : ""} onClick={() => setLogSource("tunnel")}><ShieldCheck size={16} />Secure Tunnel</button></div>{logSource === "mcp" && <label className="log-project-select"><span>项目</span><select value={logProjectId ?? ""} onChange={(event) => setLogProjectId(event.target.value || null)}>{settings?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}<pre className="log-console">{logs}</pre><div className="log-footer"><StatusDot ready={status.overall === "running"} />每 2.5 秒自动刷新<button className="text-button" onClick={refreshLogs}><RefreshCw size={15} />立即刷新</button></div></div>}
 
         {view === "settings" && settings && <div className="view settings-view"><div className="view-heading"><div><span className="eyebrow">LOCAL CONFIGURATION</span><h1>连接设置</h1></div><button className="primary-compact" onClick={handleSaveSettings} disabled={busy}><Save size={17} />保存设置</button></div>
-          <section className="settings-band project-management-band"><div className="settings-label"><MonitorCog size={20} /><div><h2>项目目录</h2><p>每个项目拥有独立文档目录；在线项目通过共享 MCP Proxy 暴露。</p></div></div><div className="project-editor"><div className="project-toolbar"><strong>{settings.projects.length} 个项目</strong><button className="secondary-button" onClick={addProject}><Plus size={17} />新增项目</button></div>{settings.projects.map((project) => { const runtime = status.projects.find((item) => item.project_id === project.id); const running = runtime?.overall === "running" || runtime?.overall === "starting"; return <div className={`project-editor-row ${selectedProjectId === project.id ? "is-selected" : ""}`} key={project.id} onClick={() => setSelectedProjectId(project.id)}><div className="project-editor-main"><input aria-label="项目名称" value={project.name} onChange={(event) => updateProject(project.id, { name: event.target.value })} /><code>{project.id}</code><div className="project-path-editor"><code>{project.output_directory}</code><button className="icon-button" onClick={(event) => { event.stopPropagation(); void chooseDirectory(project.id); }} title="选择输出目录" aria-label="选择输出目录"><FolderOpen size={16} /></button></div></div><label className="project-enabled"><input type="checkbox" checked={project.enabled} onChange={(event) => updateProject(project.id, { enabled: event.target.checked })} />启用</label><button className="icon-button" onClick={(event) => { event.stopPropagation(); void handleProjectPower(project.id, running ? "stop" : "start"); }} disabled={projectBusy !== null && projectBusy !== project.id} title={running ? "停止项目" : "启动项目"} aria-label={running ? "停止项目" : "启动项目"}>{projectBusy === project.id ? <LoaderCircle className="spin" size={16} /> : running ? <Square size={16} /> : <Play size={16} />}</button><button className="icon-button danger-icon" onClick={(event) => { event.stopPropagation(); removeProject(project.id); }} title="删除项目" aria-label="删除项目"><Trash2 size={16} /></button></div>; })}</div></section>
+          <section className="settings-band project-management-band"><div className="settings-label"><MonitorCog size={20} /><div><h2>项目目录</h2><p>项目名称用于识别，Project Key / project_id 用于 ChatGPT 和 Router 路由。</p></div></div><div className="project-editor"><div className="project-toolbar"><strong>{settings.projects.length} 个项目</strong><button className="secondary-button" onClick={addProject}><Plus size={17} />新增项目</button></div>{settings.projects.map((project) => { const runtime = status.projects.find((item) => item.project_id === project.id); const running = runtime?.overall === "running" || runtime?.overall === "starting"; const draftKey = draftProjectKeys[project.id]; const migrating = migrationProjectId === project.id; return <div className={`project-editor-row ${selectedProjectId === project.id ? "is-selected" : ""}`} key={project.id} onClick={() => setSelectedProjectId(project.id)}><div className="project-editor-main"><label className="project-identity-field"><span>项目名称</span><input aria-label="项目名称" value={project.name} onChange={(event) => updateProjectName(project.id, event.target.value)} /></label><div className="project-key-field"><span>Project Key / project_id</span>{draftKey ? <input aria-label="Project Key" value={draftKey.value} onChange={(event) => setDraftProjectKeys((current) => ({ ...current, [project.id]: { value: event.target.value, automatic: false } }))} /> : <div className="project-key-display"><code>{project.id}</code><button className="text-button" onClick={(event) => { event.stopPropagation(); setMigrationProjectId(project.id); setMigrationKey(project.id); }} disabled={status.overall !== "stopped" || settingsDirty}>更改 key</button></div>}<small>{draftKey ? "首次保存后成为稳定路由标识" : "稳定标识；改名不会自动改变"}</small></div><div className="project-path-editor"><code>{project.output_directory}</code><button className="icon-button" onClick={(event) => { event.stopPropagation(); void chooseDirectory(project.id); }} title="选择输出目录" aria-label="选择输出目录"><FolderOpen size={16} /></button></div>{migrating && <div className="project-key-migration" onClick={(event) => event.stopPropagation()}><div><strong>更改 Project Key</strong><p>旧提示或工具调用中的 `{project.id}` 不会自动更新。迁移仅在全部连接停止时执行。</p></div><input aria-label="新的 Project Key" value={migrationKey} onChange={(event) => setMigrationKey(event.target.value)} /><div className="migration-actions"><button className="secondary-button" onClick={() => { setMigrationProjectId(null); setMigrationKey(""); }}>取消</button><button className="primary-compact" onClick={() => void handleMigrateProjectKey(project.id)} disabled={projectBusy === project.id}>{projectBusy === project.id ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}确认迁移</button></div></div>}</div><label className="project-enabled"><input type="checkbox" checked={project.enabled} onChange={(event) => updateProject(project.id, { enabled: event.target.checked })} />启用</label><button className="icon-button" onClick={(event) => { event.stopPropagation(); void handleProjectPower(project.id, running ? "stop" : "start"); }} disabled={projectBusy !== null && projectBusy !== project.id} title={running ? "停止项目" : "启动项目"} aria-label={running ? "停止项目" : "启动项目"}>{projectBusy === project.id ? <LoaderCircle className="spin" size={16} /> : running ? <Square size={16} /> : <Play size={16} />}</button><button className="icon-button danger-icon" onClick={(event) => { event.stopPropagation(); removeProject(project.id); }} title="删除项目" aria-label="删除项目"><Trash2 size={16} /></button></div>; })}</div></section>
 
           <section className="settings-band"><div className="settings-label"><KeyRound size={20} /><div><h2>Runtime API Key</h2><p>凭据由当前 Windows 账户加密保管。</p></div></div><div className="key-editor"><div className="input-with-icon"><input type={showKey ? "text" : "password"} value={runtimeKey} onChange={(event) => setRuntimeKey(event.target.value)} placeholder={status.credential_configured ? "已安全保存，输入新密钥可覆盖" : "粘贴 Runtime API Key"} /><button onClick={() => setShowKey((value) => !value)} title={showKey ? "隐藏密钥" : "显示密钥"} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button></div><button className="secondary-button" onClick={handleSaveKey} disabled={!runtimeKey.trim() || busy}><ShieldCheck size={17} />安全保存</button></div></section>
 

@@ -11,6 +11,7 @@ export const api = {
   stopProject: (projectId: string) => invoke<DelegateStatus>("stop_project", { projectId }),
   getSettings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => invoke<AppSettings>("save_settings", { settings }),
+  migrateProjectKey: (oldProjectId: string, newProjectId: string) => invoke<AppSettings>("migrate_project_key", { oldProjectId, newProjectId }),
   saveRuntimeKey: (key: string) => invoke<void>("save_runtime_key", { key }),
   readLogs: (source: LogSource, projectId?: string) => invoke<string>("read_logs", { source, projectId: projectId ?? null }),
   openLogDirectory: () => invoke<void>("open_log_directory"),

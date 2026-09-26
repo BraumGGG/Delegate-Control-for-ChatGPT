@@ -23,12 +23,25 @@ ChatGPT Connector / Secure Tunnel
 
 每个项目都是独立的 `chatgpt-delegate` 进程，并使用独立 MCP 端口和输出目录；项目之间不会混写。新增项目不需要新增 tunnel ID，也不需要为每个项目维护独立 Connector。对 ChatGPT 暴露的是固定 Router MCP 工具目录，项目通过可选 `project_id` 参数路由。
 
+当只有一个启用项目时，项目工具可以省略 `project_id`。当两个或以上项目启用时，所有会创建或修改文件的操作必须显式提供 Project Key，例如 `project_id="screencast"`；Router 不会再把多项目写入静默回退到界面当前项目。读取和状态操作仍可在安全时使用当前项目便利回退。
+
+### Project Name 与 Project Key
+
+每个项目有两个不同身份：
+
+- **项目名称**：面向用户显示，可随时修改，例如 `ScreenCast`。
+- **Project Key / project_id**：ChatGPT 和 Router 使用的稳定路由标识，例如 `screencast`。
+
+新建项目时，DCFC 会根据名称建议一个不冲突的 Project Key，首次保存前可以修改。项目保存后，普通名称修改不会改变 Project Key。
+
+已有 Project Key 只能通过设置页中的显式迁移操作修改。迁移要求先停止全部连接，并会同步更新 DCFC 设置、活动项目引用和项目日志目录。ChatGPT 历史消息、旧提示和外部文档中的旧 `project_id` 无法自动更新，需要手工改用新 key。
+
 ## 使用方式
 
 1. 打开 DCFC，在“设置 → 项目目录”中新增项目并选择文档输出目录。
 2. 为需要同时在线的项目勾选“启用”，保存设置。
 3. 点击“启动全部项目”。DCFC 会启动多个项目 MCP、一个 `mcp-proxy` 和一个 `tunnel-client`。
-4. 日常在 ChatGPT 中用自然语言明确项目，例如“请在客户 A 项目中保存会议纪要”。Router 始终使用固定裸工具名，多项目时通过可选 `project_id` 参数路由。项目不明确时，ChatGPT 应先澄清，不应猜目录。
+4. 日常在 ChatGPT 中用自然语言明确项目，例如“请在 ScreenCast（project_id: screencast）中保存会议纪要”。Router 始终使用固定裸工具名；多项目写入必须显式传入 `project_id`。项目不明确时，调用会在写入前被拒绝并返回可用项目名称与 key。
 5. 修改项目目录、端口、名称或启用状态后，必须重启连接才会生效；界面会明确提示这一点。
 
 ### 编辑已有文本文件

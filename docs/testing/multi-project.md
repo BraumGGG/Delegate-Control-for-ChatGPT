@@ -9,6 +9,9 @@
 - `client-test doctor --project "D:\\claudecode\\cchaha\\Project\\咨询\\delegate-control" --json`
 - Connector pytest/unittest：工具注册、路径越权、精确匹配、SHA 冲突和原子写入
 - MCP 协议级发现：单项目和多项目都确认固定 11 个裸工具名；项目通过可选 `project_id` 参数路由，不再生成 `<project_id>__` 工具名
+- 多项目写入：缺少 `project_id` 时必须在任何文件变化前失败，并返回 `项目名称 (project_id)` 列表
+- 单项目兼容：只有一个启用项目时，写入仍可省略 `project_id`
+- Project Key 迁移：只允许全部连接停止后执行；设置、活动项目引用和日志目录保持一致，失败不留下部分迁移
 
 Rust 单元测试覆盖配置迁移、目录/端口/稳定 key 校验、Router 注册表与固定 Proxy TOML 生成、停用项目拒绝启动和空闲进程状态。真实 Tunnel 测试继续使用 `#[ignore]`，因为它需要本机安装依赖和 Runtime API Key。
 
@@ -26,7 +29,7 @@ Rust 单元测试覆盖配置迁移、目录/端口/稳定 key 校验、Router �
 2. 勾选两个项目并保存，点击“启动全部项目”。
 3. 确认总览显示两个项目在线，并且只有一个 MCP Proxy 与一个 Tunnel PID。
 4. 停止项目 A，确认项目 B 仍在线；再停止全部项目，确认所有受管进程退出。
-5. 在 ChatGPT 中通过自然语言明确项目；工具调用使用可选 `project_id`，确认文档落入对应目录。
+5. 在 ChatGPT 中通过自然语言明确项目；多项目写入工具显式使用 `project_id`，确认缺少 key 的调用无文件变化，显式调用只落入对应目录。
 
 ## 已有文件编辑验证
 

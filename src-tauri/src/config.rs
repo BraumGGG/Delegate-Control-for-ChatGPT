@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fs, path::{Path, PathBuf}};
+use std::{ffi::OsStr, fs::{self, OpenOptions}, io::Write, os::windows::ffi::OsStrExt, path::{Path, PathBuf}};
+use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -168,6 +169,30 @@ pub fn validate_project_key(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn migrate_project_key_in_settings(settings: &AppSettings, old_id: &str, new_id: &str) -> Result<AppSettings, String> {
+    let old_id = old_id.trim();
+    let new_id = new_id.trim();
+    if old_id == new_id {
+        return Err("新的 Project Key 不能与当前 key 相同。".to_string());
+    }
+    validate_project_key(new_id)?;
+    if settings.projects.iter().any(|project| project.id == new_id) {
+        return Err(format!("Project Key 已存在：{new_id}。"));
+    }
+    if !settings.projects.iter().any(|project| project.id == old_id) {
+        return Err(format!("找不到需要迁移的项目：{old_id}。"));
+    }
+
+    let mut migrated = settings.clone();
+    let project = migrated.projects.iter_mut().find(|project| project.id == old_id).expect("project existence checked");
+    project.id = new_id.to_string();
+    if migrated.active_project_id.as_deref() == Some(old_id) {
+        migrated.active_project_id = Some(new_id.to_string());
+    }
+    migrated.validate()?;
+    Ok(migrated)
+}
+
 fn stable_project_key(name: &str, used: &std::collections::HashSet<String>) -> String {
     let mut slug: String = name
         .chars()
@@ -254,7 +279,26 @@ pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<(), String> 
         fs::create_dir_all(parent).map_err(|error| format!("无法创建设置目录：{error}"))?;
     }
     let json = serde_json::to_string_pretty(settings).map_err(|error| format!("无法序列化设置：{error}"))?;
-    fs::write(path, json).map_err(|error| format!("无法保存设置：{error}"))
+    let temporary = path.with_extension("json.tmp");
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(&temporary)
+            .map_err(|error| format!("无法创建设置临时文件：{error}"))?;
+        file.write_all(json.as_bytes()).map_err(|error| format!("无法写入设置临时文件：{error}"))?;
+        file.sync_all().map_err(|error| format!("无法同步设置临时文件：{error}"))?;
+        move_file_replace(&temporary, path).map_err(|error| format!("无法原子替换设置文件：{error}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn move_file_replace(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    fn wide(value: &OsStr) -> Vec<u16> { value.encode_wide().chain(std::iter::once(0)).collect() }
+    let source = wide(source.as_os_str());
+    let destination = wide(destination.as_os_str());
+    let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
+    if result == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
 
 pub fn app_data_root() -> PathBuf {
@@ -340,5 +384,56 @@ mod tests {
         let settings = load_settings_from_value(value);
         assert_eq!(settings.projects[0].id, "screencast");
         assert_eq!(settings.active_project_id.as_deref(), Some("screencast"));
+    }
+
+    #[test]
+    fn explicitly_migrates_project_key_and_active_reference() {
+        let mut settings = AppSettings::default();
+        settings.projects[0].id = "new-project".to_string();
+        settings.projects[0].name = "Realize".to_string();
+        settings.active_project_id = Some("new-project".to_string());
+
+        let migrated = migrate_project_key_in_settings(&settings, "new-project", "realize").unwrap();
+
+        assert_eq!(migrated.projects[0].id, "realize");
+        assert_eq!(migrated.projects[0].name, "Realize");
+        assert_eq!(migrated.active_project_id.as_deref(), Some("realize"));
+        assert_eq!(settings.projects[0].id, "new-project");
+    }
+
+    #[test]
+    fn project_key_migration_rejects_invalid_duplicate_missing_and_unchanged_keys() {
+        let mut settings = AppSettings::default();
+        settings.projects[0].id = "alpha".to_string();
+        let mut beta = settings.projects[0].clone();
+        beta.id = "beta".to_string();
+        beta.name = "Beta".to_string();
+        beta.output_directory = "C:\\projects\\beta".to_string();
+        beta.mcp_port = 8001;
+        settings.projects.push(beta);
+
+        assert!(migrate_project_key_in_settings(&settings, "alpha", "beta").unwrap_err().contains("已存在"));
+        assert!(migrate_project_key_in_settings(&settings, "alpha", "Bad Key").is_err());
+        assert!(migrate_project_key_in_settings(&settings, "missing", "gamma").unwrap_err().contains("找不到"));
+        assert!(migrate_project_key_in_settings(&settings, "alpha", "alpha").unwrap_err().contains("相同"));
+        assert_eq!(settings.projects[0].id, "alpha");
+    }
+
+    #[test]
+    fn save_settings_replaces_existing_file_without_leaving_temporary_data() {
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("dcfc-settings-{suffix}"));
+        let path = root.join("settings.json");
+        let first = AppSettings::default();
+        save_settings(&path, &first).unwrap();
+        let mut second = first.clone();
+        second.projects[0].name = "Updated".to_string();
+
+        save_settings(&path, &second).unwrap();
+
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.projects[0].name, "Updated");
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
