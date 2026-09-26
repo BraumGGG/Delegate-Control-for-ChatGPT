@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .connector import (
@@ -31,6 +32,41 @@ class RouterProject:
     name: str
     output_directory: Path
     enabled: bool = True
+
+
+def _diagnostic_target(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    windows_path = PureWindowsPath(normalized)
+    path = Path(normalized)
+    parts = normalized.split("/")
+    if windows_path.is_absolute() or windows_path.drive or path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        return "<invalid-path>"
+    return normalized[:240]
+
+
+def _write_diagnostic(
+    tool_name: str,
+    project_id: str | None,
+    relative_target: str | None,
+    category: str,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "dcfc_router_tool",
+                "tool": tool_name,
+                "project_id": project_id,
+                "relative_target": _diagnostic_target(relative_target),
+                "category": category,
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+    )
 
 
 def load_router_projects(config_path: Path) -> tuple[str | None, list[RouterProject]]:
@@ -81,20 +117,36 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
     local_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
     read_only = ToolAnnotations(readOnlyHint=True)
 
-    def resolve_project(project_id: str | None) -> RouterProject:
+    def resolve_project(
+        project_id: str | None,
+        *,
+        tool_name: str,
+        side_effecting: bool = False,
+        relative_target: str | None = None,
+    ) -> RouterProject:
         active, projects = load_router_projects(config_path)
         enabled = [project for project in projects if project.enabled]
         requested = project_id.strip() if project_id else None
+        if side_effecting and len(enabled) > 1 and not requested:
+            _write_diagnostic(tool_name, None, relative_target, "explicit_project_required")
+            available = ", ".join(f"{project.name} ({project.project_id})" for project in enabled)
+            raise ConnectorError(
+                "Multiple projects are enabled; this write requires an explicit project_id. "
+                f"Available projects: {available}"
+            )
         selected_id = requested or active
         if not selected_id and len(enabled) == 1:
             selected_id = enabled[0].project_id
         if not selected_id:
+            _write_diagnostic(tool_name, None, relative_target, "project_not_selected")
             raise ConnectorError("当前有多个在线项目，请明确提供 project_id。")
         for project in enabled:
             if project.project_id == selected_id:
                 project.output_directory.mkdir(parents=True, exist_ok=True)
+                _write_diagnostic(tool_name, project.project_id, relative_target, "selected")
                 return project
-        available = ", ".join(project.project_id for project in enabled) or "无"
+        _write_diagnostic(tool_name, selected_id, relative_target, "unknown_project")
+        available = ", ".join(f"{project.name} ({project.project_id})" for project in enabled) or "无"
         raise ConnectorError(f"找不到可用项目“{selected_id}”。可用项目：{available}")
 
     @mcp.tool(annotations=local_write)
@@ -107,18 +159,27 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Save the final ChatGPT delegation result for a selected project."""
-        project = resolve_project(project_id)
+        project = resolve_project(
+            project_id,
+            tool_name="save_task_result",
+            side_effecting=True,
+            relative_target=task_id,
+        )
         return save_task_result_file(project.output_directory, task_id, title, markdown, summary, overwrite, max_bytes)
 
     @mcp.tool(annotations=read_only)
     def list_results(limit: int = 20, project_id: str | None = None) -> dict[str, Any]:
         """List completed ChatGPT delegation task results for a selected project."""
-        return list_task_results(resolve_project(project_id).output_directory, limit=limit)
+        return list_task_results(resolve_project(project_id, tool_name="list_results").output_directory, limit=limit)
 
     @mcp.tool(annotations=read_only)
     def read_result(task_id: str, project_id: str | None = None) -> dict[str, Any]:
         """Read a completed ChatGPT delegation task result for a selected project."""
-        return read_task_result(resolve_project(project_id).output_directory, task_id, include_markdown=True)
+        return read_task_result(
+            resolve_project(project_id, tool_name="read_result", relative_target=task_id).output_directory,
+            task_id,
+            include_markdown=True,
+        )
 
     @mcp.tool(annotations=local_write)
     def save_markdown_report(
@@ -129,24 +190,33 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Save a Markdown report to a selected project."""
-        saved = save_markdown_report_file(resolve_project(project_id).output_directory, title, markdown, filename, overwrite, max_bytes)
+        project = resolve_project(
+            project_id,
+            tool_name="save_markdown_report",
+            side_effecting=True,
+            relative_target=filename,
+        )
+        saved = save_markdown_report_file(project.output_directory, title, markdown, filename, overwrite, max_bytes)
         return {"status": "ok", **saved.__dict__}
 
     @mcp.tool(annotations=read_only)
     def list_reports(limit: int = 20, project_id: str | None = None) -> dict[str, Any]:
         """List Markdown reports for a selected project."""
-        return list_report_files(resolve_project(project_id).output_directory, limit=limit)
+        return list_report_files(resolve_project(project_id, tool_name="list_reports").output_directory, limit=limit)
 
     @mcp.tool(annotations=read_only)
     def read_report(filename: str, project_id: str | None = None) -> dict[str, Any]:
         """Read a Markdown report from a selected project."""
-        return read_report_file(resolve_project(project_id).output_directory, filename)
+        return read_report_file(
+            resolve_project(project_id, tool_name="read_report", relative_target=filename).output_directory,
+            filename,
+        )
 
     @mcp.tool(annotations=read_only)
     def connector_status(project_id: str | None = None) -> dict[str, Any]:
         """Return fixed Router status and the selected project directory."""
         active, projects = load_router_projects(config_path)
-        selected = resolve_project(project_id)
+        selected = resolve_project(project_id, tool_name="connector_status")
         return {
             "status": "ready",
             "router": True,
@@ -165,7 +235,11 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
     @mcp.tool(annotations=read_only)
     def read_text_file(filename: str, project_id: str | None = None) -> dict[str, Any]:
         """Read a UTF-8 text file from a selected project."""
-        return read_text_file_operation(resolve_project(project_id).output_directory, filename, max_bytes=max_bytes)
+        return read_text_file_operation(
+            resolve_project(project_id, tool_name="read_text_file", relative_target=filename).output_directory,
+            filename,
+            max_bytes=max_bytes,
+        )
 
     @mcp.tool(annotations=local_write)
     def append_text_file(
@@ -175,7 +249,13 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Append text to a selected project file."""
-        return append_text_file_operation(resolve_project(project_id).output_directory, filename, content, expected_sha256, max_bytes)
+        project = resolve_project(
+            project_id,
+            tool_name="append_text_file",
+            side_effecting=True,
+            relative_target=filename,
+        )
+        return append_text_file_operation(project.output_directory, filename, content, expected_sha256, max_bytes)
 
     @mcp.tool(annotations=local_write)
     def replace_text_in_file(
@@ -187,7 +267,13 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Replace an exact text fragment in a selected project file."""
-        return replace_text_in_file_operation(resolve_project(project_id).output_directory, filename, old_text, new_text, expected_occurrences, expected_sha256, max_bytes)
+        project = resolve_project(
+            project_id,
+            tool_name="replace_text_in_file",
+            side_effecting=True,
+            relative_target=filename,
+        )
+        return replace_text_in_file_operation(project.output_directory, filename, old_text, new_text, expected_occurrences, expected_sha256, max_bytes)
 
     @mcp.tool(annotations=local_write)
     def delete_text_from_file(
@@ -198,6 +284,12 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Delete an exact text fragment from a selected project file."""
-        return delete_text_from_file_operation(resolve_project(project_id).output_directory, filename, text, expected_occurrences, expected_sha256, max_bytes)
+        project = resolve_project(
+            project_id,
+            tool_name="delete_text_from_file",
+            side_effecting=True,
+            relative_target=filename,
+        )
+        return delete_text_from_file_operation(project.output_directory, filename, text, expected_occurrences, expected_sha256, max_bytes)
 
     return mcp
