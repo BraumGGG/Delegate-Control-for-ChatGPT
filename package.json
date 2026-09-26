@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "check:multi-project": "node scripts/multi-project-check.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
     "lucide-react": "1.47.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

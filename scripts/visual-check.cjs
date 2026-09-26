@@ -8,23 +8,30 @@ fs.mkdirSync(outputDir, { recursive: true });
 const status = {
   overall: "running",
   proxy_ready: true,
+  mcp_proxy_ready: true,
   mcp_ready: true,
   tunnel_ready: true,
+  proxy_pid: 24680,
   mcp_pid: 38768,
   tunnel_pid: 13388,
   credential_configured: true,
   message: "ChatGPT Delegate 连接已建立。",
+  projects: [{ project_id: "default", name: "默认项目", output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation", overall: "running", mcp_ready: true, mcp_pid: 38768, message: "项目 MCP 已就绪。" }],
 };
 const settings = {
   proxy_host: "127.0.0.1",
   proxy_port: 7897,
-  mcp_host: "127.0.0.1",
-  mcp_port: 8000,
+  mcp_proxy_host: "127.0.0.1",
+  mcp_proxy_port: 8100,
   health_port: 8080,
+  health_host: "127.0.0.1",
   profile_name: "chatgpt-delegate",
   mcp_executable: "C:\\Users\\Redmi\\.local\\bin\\chatgpt-delegate.exe",
+  proxy_executable: "C:\\Users\\Redmi\\.local\\bin\\mcp-proxy.exe",
+  proxy_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
   tunnel_executable: "D:\\tunnel-client\\install\\tunnel-client.exe",
-  output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation",
+  projects: [{ id: "default", name: "默认项目", output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation", mcp_host: "127.0.0.1", mcp_port: 8000, enabled: true }],
+  active_project_id: "default",
 };
 
 (async () => {
@@ -44,7 +51,7 @@ const settings = {
         unregisterCallback(id) { this.callbacks.delete(id); },
         convertFileSrc(filePath) { return filePath; },
         async invoke(command) {
-          if (command === "get_status" || command === "start_delegate" || command === "stop_delegate") return status;
+          if (["get_status", "start_delegate", "stop_delegate", "start_all_projects", "stop_all_projects", "start_project", "stop_project"].includes(command)) return status;
           if (command === "get_settings" || command === "save_settings") return settings;
           if (command === "read_logs") return "INFO  MCP server ready on 127.0.0.1:8000/mcp\nINFO  Secure tunnel connected\nINFO  Connector status: ready";
           if (command.includes("plugin:event")) return 1;

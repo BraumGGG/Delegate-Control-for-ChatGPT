@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for Delegate Control for ChatGPT",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

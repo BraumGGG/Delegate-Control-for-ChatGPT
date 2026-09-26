@@ -1,355 +1,426 @@
-use crate::{config::AppSettings, credentials};
+use crate::{config::{AppSettings, ProjectConfig}, credentials, proxy_config::{build_proxy_toml, build_router_registry, write_proxy_config}};
 use serde::Serialize;
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    net::{TcpStream, ToSocketAddrs},
-    os::windows::{io::AsRawHandle, process::CommandExt},
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
-use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE},
-    System::{
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        },
-        Threading::CREATE_NO_WINDOW,
-    },
-};
+use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::{Read, Write}, net::{TcpStream, ToSocketAddrs}, os::windows::{io::AsRawHandle, process::CommandExt}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant}};
+use windows_sys::Win32::{Foundation::{CloseHandle, HANDLE}, System::{JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE}, Threading::CREATE_NO_WINDOW}};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum OverallState {
-    Stopped,
-    Starting,
-    Running,
-    Stopping,
-    Failed,
+pub enum OverallState { Stopped, Starting, Running, Stopping, Failed }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectRuntimeStatus {
+    pub project_id: String,
+    pub name: String,
+    pub output_directory: String,
+    pub overall: OverallState,
+    pub mcp_ready: bool,
+    pub mcp_pid: Option<u32>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DelegateStatus {
     pub overall: OverallState,
     pub proxy_ready: bool,
+    pub router_ready: bool,
+    pub mcp_proxy_ready: bool,
     pub mcp_ready: bool,
     pub tunnel_ready: bool,
+    pub proxy_pid: Option<u32>,
+    pub router_pid: Option<u32>,
     pub mcp_pid: Option<u32>,
     pub tunnel_pid: Option<u32>,
     pub credential_configured: bool,
+    pub text_editing_available: bool,
+    pub connector_capability_message: String,
     pub message: String,
+    pub projects: Vec<ProjectRuntimeStatus>,
 }
 
+struct ManagedProject { child: Child }
+
 pub struct ProcessManager {
-    mcp: Option<Child>,
+    projects: HashMap<String, ManagedProject>,
+    project_failures: HashMap<String, String>,
+    proxy: Option<Child>,
+    router: Option<Child>,
     tunnel: Option<Child>,
     job: Option<HANDLE>,
     overall: OverallState,
     message: String,
     log_dir: PathBuf,
+    connector_capability_path: Option<String>,
+    text_editing_available: bool,
+    connector_capability_message: String,
 }
 
 unsafe impl Send for ProcessManager {}
 
 impl ProcessManager {
     pub fn new(log_dir: PathBuf) -> Self {
-        Self {
-            mcp: None,
-            tunnel: None,
-            job: None,
-            overall: OverallState::Stopped,
-            message: "连接仅在需要时启动。".to_string(),
-            log_dir,
-        }
+        Self { projects: HashMap::new(), project_failures: HashMap::new(), proxy: None, router: None, tunnel: None, job: None, overall: OverallState::Stopped, message: "连接仅在需要时启动。".to_string(), log_dir, connector_capability_path: None, text_editing_available: false, connector_capability_message: "尚未检测 Connector 文件编辑能力。".to_string() }
     }
 
     pub fn status(&mut self, settings: &AppSettings) -> DelegateStatus {
         self.refresh_process_state();
+        self.refresh_connector_capability(&settings.mcp_executable);
         let proxy_ready = tcp_ready(&settings.proxy_host, settings.proxy_port, 350);
-        let mcp_ready = tcp_ready(&settings.mcp_host, settings.mcp_port, 350);
-        let tunnel_ready = http_ready(&settings.mcp_host, settings.health_port, 500);
-        DelegateStatus {
-            overall: self.overall,
-            proxy_ready,
-            mcp_ready,
-            tunnel_ready,
-            mcp_pid: self.mcp.as_ref().map(Child::id),
-            tunnel_pid: self.tunnel.as_ref().map(Child::id),
-            credential_configured: credentials::credential_exists(),
-            message: self.message.clone(),
-        }
+        let router_ready = self.router.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.router_port, 350);
+        let mcp_proxy_ready = self.proxy.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 350);
+        let tunnel_ready = self.tunnel.is_some() && http_ready(&settings.health_host, settings.health_port, 500);
+        let projects = settings.projects.iter().map(|project| self.project_status(project)).collect::<Vec<_>>();
+        let enabled = projects.iter().filter(|project| settings.projects.iter().any(|configured| configured.id == project.project_id && configured.enabled)).collect::<Vec<_>>();
+        let mcp_ready = !enabled.is_empty() && enabled.iter().all(|project| project.mcp_ready);
+        let selected = settings.active_project_id.as_ref().and_then(|id| self.projects.get(id)).or_else(|| self.projects.values().next());
+        DelegateStatus { overall: self.overall, proxy_ready, router_ready, mcp_proxy_ready, mcp_ready, tunnel_ready, proxy_pid: self.proxy.as_ref().map(Child::id), router_pid: self.router.as_ref().map(Child::id), mcp_pid: selected.map(|managed| managed.child.id()), tunnel_pid: self.tunnel.as_ref().map(Child::id), credential_configured: credentials::credential_exists(), text_editing_available: self.text_editing_available, connector_capability_message: self.connector_capability_message.clone(), message: self.message.clone(), projects }
     }
 
     pub fn start(&mut self, settings: &AppSettings) -> Result<DelegateStatus, String> {
-        self.refresh_process_state();
-        if self.overall == OverallState::Running {
-            return Ok(self.status(settings));
-        }
-        self.stop_internal();
-        settings.validate()?;
+        self.start_all(settings)
+    }
 
+    pub fn start_all(&mut self, settings: &AppSettings) -> Result<DelegateStatus, String> {
+        self.refresh_process_state();
+        settings.validate()?;
+        if settings.projects.iter().all(|project| !project.enabled) { return self.fail("至少启用一个项目后才能启动连接。".to_string()); }
+        if self.all_enabled_running(settings) && self.router.is_some() && self.proxy.is_some() && self.tunnel.is_some() { return Ok(self.status(settings)); }
+        self.stop_internal();
+        self.overall = OverallState::Starting;
+        self.message = "正在启动多个项目的本地 MCP。".to_string();
         let key = credentials::read_runtime_key()?;
         require_file(&settings.mcp_executable, "MCP 程序")?;
+        require_file(&settings.proxy_executable, "MCP Proxy 程序")?;
         require_file(&settings.tunnel_executable, "Tunnel 程序")?;
-        fs::create_dir_all(&settings.output_directory).map_err(|error| format!("无法创建结果目录：{error}"))?;
-        fs::create_dir_all(&self.log_dir).map_err(|error| format!("无法创建日志目录：{error}"))?;
-
-        if !tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
-            return self.fail("Clash 代理未就绪，请先启动 Clash。".to_string());
-        }
-        if tcp_ready(&settings.mcp_host, settings.mcp_port, 250) {
-            return self.fail(format!("端口 {} 已被其他程序占用。", settings.mcp_port));
-        }
-        if tcp_ready(&settings.mcp_host, settings.health_port, 250) {
-            return self.fail(format!("端口 {} 已被其他程序占用。", settings.health_port));
-        }
-
-        let mcp_stdout = log_file(&self.log_dir.join("mcp.stdout.log"))?;
-        let mcp_stderr = log_file(&self.log_dir.join("mcp.stderr.log"))?;
-        let tunnel_stdout = log_file(&self.log_dir.join("tunnel.stdout.log"))?;
-        let tunnel_stderr = log_file(&self.log_dir.join("tunnel.stderr.log"))?;
-
-        self.overall = OverallState::Starting;
-        self.message = "正在启动本地 MCP Server。".to_string();
-        let job = create_job()?;
-        self.job = Some(job);
-
-        let mut mcp_command = Command::new(&settings.mcp_executable);
-        mcp_command
-            .args([
-                "--output-dir",
-                &settings.output_directory,
-                "serve",
-                "--host",
-                &settings.mcp_host,
-                "--port",
-                &settings.mcp_port.to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(mcp_stdout))
-            .stderr(Stdio::from(mcp_stderr))
-            .creation_flags(CREATE_NO_WINDOW);
-        let mut mcp = match mcp_command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
+        self.job = Some(create_job()?);
+        for project in settings.projects.iter().filter(|project| project.enabled) {
+            if let Err(error) = self.start_project_mcp(settings, project) {
                 self.stop_internal();
-                return self.fail(format!("无法启动 MCP：{error}"));
+                return self.fail(error);
             }
-        };
-        if let Err(error) = assign_to_job(job, &mcp) {
-            self.mcp = Some(mcp);
+        }
+        if let Err(error) = self.start_shared(settings, &key) {
             self.stop_internal();
             return self.fail(error);
         }
-
-        if !wait_for_tcp(&settings.mcp_host, settings.mcp_port, Duration::from_secs(15), &mut mcp) {
-            self.mcp = Some(mcp);
-            self.stop_internal();
-            return self.fail("MCP 未能在 15 秒内就绪，请查看日志。".to_string());
-        }
-        self.mcp = Some(mcp);
-        self.message = "本地 MCP 已就绪，正在建立安全 Tunnel。".to_string();
-
-        let tunnel_log = self.log_dir.join("tunnel.log");
-        let mut tunnel_command = Command::new(&settings.tunnel_executable);
-        tunnel_command
-            .args([
-                "run",
-                "--profile",
-                &settings.profile_name,
-                "--control-plane.http-proxy",
-                &format!("http://{}:{}", settings.proxy_host, settings.proxy_port),
-                "--open-web-ui=false",
-                "--log.file",
-                &tunnel_log.to_string_lossy(),
-            ])
-            .env("CONTROL_PLANE_API_KEY", key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(tunnel_stdout))
-            .stderr(Stdio::from(tunnel_stderr))
-            .creation_flags(CREATE_NO_WINDOW);
-        let mut tunnel = match tunnel_command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                self.stop_internal();
-                return self.fail(format!("无法启动 Tunnel：{error}"));
-            }
-        };
-        if let Err(error) = assign_to_job(job, &tunnel) {
-            self.tunnel = Some(tunnel);
-            self.stop_internal();
-            return self.fail(error);
-        }
-
-        if !wait_for_http(&settings.mcp_host, settings.health_port, Duration::from_secs(30), &mut tunnel) {
-            self.tunnel = Some(tunnel);
-            self.stop_internal();
-            return self.fail("Tunnel 未能在 30 秒内就绪，请检查密钥和 Tunnel 日志。".to_string());
-        }
-        self.tunnel = Some(tunnel);
         self.overall = OverallState::Running;
-        self.message = "ChatGPT Delegate 连接已建立。".to_string();
+        self.message = "多个项目的 ChatGPT Delegate 连接已建立。".to_string();
         Ok(self.status(settings))
     }
 
-    pub fn stop(&mut self, settings: &AppSettings) -> DelegateStatus {
+    pub fn start_project(&mut self, settings: &AppSettings, project_id: &str) -> Result<DelegateStatus, String> {
+        settings.validate()?;
+        let project = settings.projects.iter().find(|project| project.id == project_id).ok_or_else(|| "找不到指定项目。".to_string())?;
+        if !project.enabled {
+            return self.fail(format!("项目“{}”尚未启用，请先在设置中启用后再启动。", project.name));
+        }
+        if self.projects.contains_key(project_id) { return Ok(self.status(settings)); }
+        if self.job.is_none() { self.job = Some(create_job()?); }
+        self.overall = OverallState::Starting;
+        if let Err(error) = self.start_project_mcp(settings, project) {
+            self.stop_internal();
+            return self.fail(error);
+        }
+        if self.proxy.is_some() || self.tunnel.is_some() {
+            let key = match credentials::read_runtime_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    self.stop_internal();
+                    return self.fail(error);
+                }
+            };
+            self.stop_shared();
+            if let Err(error) = self.start_shared(settings, &key) {
+                self.stop_internal();
+                return self.fail(error);
+            }
+        } else {
+            let key = match credentials::read_runtime_key() {
+                Ok(key) => key,
+                Err(error) => {
+                    self.stop_internal();
+                    return self.fail(error);
+                }
+            };
+            if let Err(error) = self.start_shared(settings, &key) {
+                self.stop_internal();
+                return self.fail(error);
+            }
+        }
+        self.overall = OverallState::Running;
+        self.message = format!("项目“{}”已在线。", project.name);
+        Ok(self.status(settings))
+    }
+
+    pub fn stop(&mut self, settings: &AppSettings) -> DelegateStatus { self.stop_all(settings) }
+
+    pub fn stop_all(&mut self, settings: &AppSettings) -> DelegateStatus {
         self.overall = OverallState::Stopping;
-        self.message = "正在安全停止连接。".to_string();
+        self.message = "正在安全停止所有项目连接。".to_string();
         self.stop_internal();
         self.overall = OverallState::Stopped;
         self.message = "连接已停止，没有后台进程残留。".to_string();
         self.status(settings)
     }
 
-    pub fn read_logs(&self, source: &str) -> Result<String, String> {
-        let names: &[&str] = match source {
-            "mcp" => &["mcp.stderr.log", "mcp.stdout.log"],
-            "tunnel" => &["tunnel.stderr.log", "tunnel.log", "tunnel.stdout.log"],
+    pub fn stop_project(&mut self, settings: &AppSettings, project_id: &str) -> Result<DelegateStatus, String> {
+        let project = settings.projects.iter().find(|project| project.id == project_id).ok_or_else(|| "找不到指定项目。".to_string())?;
+        if let Some(mut managed) = self.projects.remove(project_id) { terminate_child(&mut managed.child); }
+        self.project_failures.remove(project_id);
+        if self.projects.is_empty() { self.stop_shared(); self.overall = OverallState::Stopped; self.message = format!("项目“{}”已停止。", project.name); return Ok(self.status(settings)); }
+        let key = credentials::read_runtime_key()?;
+        self.stop_shared();
+        if let Err(error) = self.start_shared(settings, &key) {
+            self.stop_internal();
+            return self.fail(error);
+        }
+        self.overall = OverallState::Running;
+        self.message = format!("项目“{}”已停止，其他项目仍在线。", project.name);
+        Ok(self.status(settings))
+    }
+
+    pub fn read_logs(&self, source: &str, project_id: Option<&str>) -> Result<String, String> {
+        let (names, directory) = match source {
+            "mcp" => (vec!["mcp.stderr.log", "mcp.stdout.log"], project_id.map(|id| self.log_dir.join(id)).unwrap_or_else(|| self.log_dir.clone())),
+            "proxy" => (vec!["proxy.stderr.log", "proxy.stdout.log"], self.log_dir.clone()),
+            "router" => (vec!["router.stderr.log", "router.stdout.log"], self.log_dir.clone()),
+            "tunnel" => (vec!["tunnel.stderr.log", "tunnel.log", "tunnel.stdout.log"], self.log_dir.clone()),
             _ => return Err("未知日志类型。".to_string()),
         };
         let mut combined = String::new();
         for name in names {
-            let path = self.log_dir.join(name);
-            if let Ok(content) = read_tail(&path, 80_000) {
-                if !content.trim().is_empty() {
-                    combined.push_str(&format!("===== {name} =====\n{content}\n"));
-                }
+            if let Ok(content) = read_tail(&directory.join(name), 80_000) {
+                if !content.trim().is_empty() { combined.push_str(&format!("===== {name} =====\n{content}\n")); }
             }
         }
-        if combined.is_empty() {
-            Ok("暂无日志。启动连接后将在这里显示运行信息。".to_string())
-        } else {
-            Ok(combined)
-        }
+        if combined.is_empty() { Ok("暂无日志。启动连接后将在这里显示运行信息。".to_string()) } else { Ok(combined) }
     }
 
-    pub fn log_dir(&self) -> &Path {
-        &self.log_dir
+    pub fn log_dir(&self) -> &Path { &self.log_dir }
+
+    fn refresh_connector_capability(&mut self, executable: &str) {
+        if self.connector_capability_path.as_deref() == Some(executable) {
+            return;
+        }
+        self.connector_capability_path = Some(executable.to_string());
+        self.text_editing_available = false;
+        let path = Path::new(executable);
+        if !path.is_file() {
+            self.connector_capability_message = "当前 MCP 程序不存在，暂时无法检测文件编辑能力。".to_string();
+            return;
+        }
+        let output = Command::new(path)
+            .args(["capabilities", "--json"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        let Ok(output) = output else {
+            self.connector_capability_message = "当前 MCP 程序不支持能力检测，文件编辑工具不可用。".to_string();
+            return;
+        };
+        if !output.status.success() {
+            self.connector_capability_message = "当前 MCP 程序未提供文件编辑能力；现有报告工具仍可用。".to_string();
+            return;
+        }
+        let Some(available) = parse_text_editing_capability(&output.stdout) else {
+            self.connector_capability_message = "MCP 能力检测返回格式无效，文件编辑工具不可用。".to_string();
+            return;
+        };
+        self.text_editing_available = available;
+        self.connector_capability_message = if self.text_editing_available {
+            "当前 MCP 支持项目内文本文件编辑。".to_string()
+        } else {
+            "当前 MCP 未提供文件编辑能力；现有报告工具仍可用。".to_string()
+        };
     }
+
+    fn project_status(&self, project: &ProjectConfig) -> ProjectRuntimeStatus {
+        if let Some(managed) = self.projects.get(&project.id) {
+            let ready = tcp_ready(&project.mcp_host, project.mcp_port, 350);
+            return ProjectRuntimeStatus { project_id: project.id.clone(), name: project.name.clone(), output_directory: project.output_directory.clone(), overall: if ready { OverallState::Running } else { OverallState::Starting }, mcp_ready: ready, mcp_pid: Some(managed.child.id()), message: if ready { "项目 MCP 已就绪。".to_string() } else { "正在等待项目 MCP。".to_string() } };
+        }
+        let message = self.project_failures.get(&project.id).cloned().unwrap_or_else(|| if project.enabled { "项目未启动。".to_string() } else { "项目已停用。".to_string() });
+        ProjectRuntimeStatus { project_id: project.id.clone(), name: project.name.clone(), output_directory: project.output_directory.clone(), overall: if self.project_failures.contains_key(&project.id) { OverallState::Failed } else { OverallState::Stopped }, mcp_ready: false, mcp_pid: None, message }
+    }
+
+    fn all_enabled_running(&self, settings: &AppSettings) -> bool { settings.projects.iter().filter(|project| project.enabled).all(|project| self.projects.contains_key(&project.id)) }
+
+    fn start_project_mcp(&mut self, settings: &AppSettings, project: &ProjectConfig) -> Result<(), String> {
+        fs::create_dir_all(&project.output_directory).map_err(|error| format!("无法创建项目“{}”的输出目录：{error}", project.name))?;
+        if tcp_ready(&project.mcp_host, project.mcp_port, 250) { return Err(format!("项目“{}”的 MCP 端口 {} 已被其他程序占用。", project.name, project.mcp_port)); }
+        let project_log_dir = self.log_dir.join(&project.id);
+        fs::create_dir_all(&project_log_dir).map_err(|error| format!("无法创建项目日志目录：{error}"))?;
+        let stdout = log_file(&project_log_dir.join("mcp.stdout.log"))?;
+        let stderr = log_file(&project_log_dir.join("mcp.stderr.log"))?;
+        let mut command = Command::new(&settings.mcp_executable);
+        command.args(["--output-dir", &project.output_directory, "serve", "--host", &project.mcp_host, "--port", &project.mcp_port.to_string()]).stdin(Stdio::null()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).creation_flags(CREATE_NO_WINDOW);
+        let mut child = command.spawn().map_err(|error| format!("无法启动项目“{}”的 MCP：{error}", project.name))?;
+        if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &child) {
+            terminate_child(&mut child);
+            return Err(error);
+        }
+        let wait_result = wait_for_tcp(&project.mcp_host, project.mcp_port, Duration::from_secs(15), &mut child);
+        if !matches!(wait_result, WaitResult::Ready) {
+            terminate_child(&mut child);
+            let reason = match wait_result { WaitResult::Exited => "MCP 进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() };
+            return Err(format!("项目“{}”的 MCP 未能就绪：{}。请查看项目日志。当前 MCP 程序：{}", project.name, reason, settings.mcp_executable));
+        }
+        self.project_failures.remove(&project.id);
+        self.projects.insert(project.id.clone(), ManagedProject { child });
+        Ok(())
+    }
+
+    fn start_shared(&mut self, settings: &AppSettings, key: &str) -> Result<(), String> {
+        if tcp_ready(&settings.mcp_proxy_host, settings.router_port, 250) { return Err(format!("Router 端口 {} 已被其他程序占用。", settings.router_port)); }
+        if tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 250) { return Err(format!("MCP Proxy 端口 {} 已被其他程序占用。", settings.mcp_proxy_port)); }
+        if tcp_ready(&settings.health_host, settings.health_port, 250) { return Err(format!("健康端口 {} 已被其他程序占用。", settings.health_port)); }
+        let projects = settings.projects.iter().filter(|project| self.projects.contains_key(&project.id)).cloned().collect::<Vec<_>>();
+        let registry = build_router_registry(settings, &projects)?;
+        write_proxy_config(Path::new(&settings.router_config_path), &registry)?;
+        let toml = build_proxy_toml(settings, &projects)?;
+        write_proxy_config(Path::new(&settings.proxy_config_path), &toml)?;
+        fs::create_dir_all(&self.log_dir).map_err(|error| format!("无法创建日志目录：{error}"))?;
+        let router_stdout = log_file(&self.log_dir.join("router.stdout.log"))?;
+        let router_stderr = log_file(&self.log_dir.join("router.stderr.log"))?;
+        let mut router_command = Command::new(&settings.mcp_executable);
+        router_command.args(["router", "--config", &settings.router_config_path, "--host", &settings.mcp_proxy_host, "--port", &settings.router_port.to_string()]).stdin(Stdio::null()).stdout(Stdio::from(router_stdout)).stderr(Stdio::from(router_stderr)).creation_flags(CREATE_NO_WINDOW);
+        let mut router = router_command.spawn().map_err(|error| format!("无法启动 Router MCP：{error}"))?;
+        if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &router) {
+            terminate_child(&mut router);
+            return Err(error);
+        }
+        let wait_result = wait_for_tcp(&settings.mcp_proxy_host, settings.router_port, Duration::from_secs(15), &mut router);
+        if !matches!(wait_result, WaitResult::Ready) {
+            terminate_child(&mut router);
+            let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() };
+            return Err(format!("Router MCP 未能就绪：{}。请查看 Router 日志。当前程序：{}", reason, settings.mcp_executable));
+        }
+        self.router = Some(router);
+        let proxy_stdout = log_file(&self.log_dir.join("proxy.stdout.log"))?;
+        let proxy_stderr = log_file(&self.log_dir.join("proxy.stderr.log"))?;
+        let mut proxy_command = Command::new(&settings.proxy_executable);
+        proxy_command.args(["--config", &settings.proxy_config_path]).stdin(Stdio::null()).stdout(Stdio::from(proxy_stdout)).stderr(Stdio::from(proxy_stderr)).creation_flags(CREATE_NO_WINDOW);
+        let mut proxy = proxy_command.spawn().map_err(|error| format!("无法启动 MCP Proxy：{error}"))?;
+        if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &proxy) {
+            terminate_child(&mut proxy);
+            return Err(error);
+        }
+        let wait_result = wait_for_tcp(&settings.mcp_proxy_host, settings.mcp_proxy_port, Duration::from_secs(15), &mut proxy);
+        if !matches!(wait_result, WaitResult::Ready) { terminate_child(&mut proxy); let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() }; return Err(format!("MCP Proxy 未能就绪：{}。请查看 proxy 日志。当前程序：{}", reason, settings.proxy_executable)); }
+        self.proxy = Some(proxy);
+
+        let tunnel_log = self.log_dir.join("tunnel.log");
+        let tunnel_stdout = log_file(&self.log_dir.join("tunnel.stdout.log"))?;
+        let tunnel_stderr = log_file(&self.log_dir.join("tunnel.stderr.log"))?;
+        let mut tunnel_command = Command::new(&settings.tunnel_executable);
+        // mcp-proxy exposes its Streamable HTTP router at the root path. The
+        // project backends behind it still use /mcp, but the shared Tunnel
+        // must target the proxy root so initialize requests are not 404.
+        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, settings.proxy_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
+        let mut tunnel = tunnel_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 Tunnel：{error}") })?;
+        if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &tunnel) {
+            terminate_child(&mut tunnel);
+            self.stop_shared();
+            return Err(error);
+        }
+        if !wait_for_http(&settings.health_host, settings.health_port, Duration::from_secs(30), &mut tunnel) { terminate_child(&mut tunnel); self.stop_shared(); return Err("Tunnel 未能在 30 秒内就绪，请检查密钥和 Tunnel 日志。".to_string()); }
+        self.tunnel = Some(tunnel);
+        Ok(())
+    }
+
+    fn stop_shared(&mut self) { if let Some(mut child) = self.tunnel.take() { terminate_child(&mut child); } if let Some(mut child) = self.proxy.take() { terminate_child(&mut child); } if let Some(mut child) = self.router.take() { terminate_child(&mut child); } }
 
     fn refresh_process_state(&mut self) {
-        if matches!(self.overall, OverallState::Running | OverallState::Starting) {
-            let mcp_dead = self.mcp.as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
-            let tunnel_dead = self.tunnel.as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
-            if mcp_dead || tunnel_dead {
-                self.stop_internal();
-                self.overall = OverallState::Failed;
-                self.message = if mcp_dead { "MCP 进程意外退出，请查看日志。" } else { "Tunnel 进程意外退出，请查看日志。" }.to_string();
-            }
-        }
+        let dead = self.projects.iter_mut().filter_map(|(id, managed)| managed.child.try_wait().ok().flatten().map(|_| id.clone())).collect::<Vec<_>>();
+        for id in dead { self.projects.remove(&id); self.project_failures.insert(id.clone(), "项目 MCP 进程意外退出，请查看项目日志。".to_string()); self.overall = OverallState::Failed; self.message = format!("项目 {id} 的 MCP 进程意外退出。"); }
+        let proxy_dead = self.proxy.as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+        let router_dead = self.router.as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+        let tunnel_dead = self.tunnel.as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+        if router_dead || proxy_dead || tunnel_dead { self.stop_internal(); self.overall = OverallState::Failed; self.message = if router_dead { "Router MCP 进程意外退出，请查看日志。" } else if proxy_dead { "MCP Proxy 进程意外退出，请查看日志。" } else { "Tunnel 进程意外退出，请查看日志。" }.to_string(); }
     }
 
     fn stop_internal(&mut self) {
-        if let Some(job) = self.job.take() {
-            unsafe {
-                TerminateJobObject(job, 0);
-                CloseHandle(job);
-            }
-        }
-        if let Some(mut child) = self.tunnel.take() {
-            let _ = child.wait();
-        }
-        if let Some(mut child) = self.mcp.take() {
-            let _ = child.wait();
-        }
+        if let Some(job) = self.job.take() { unsafe { TerminateJobObject(job, 0); CloseHandle(job); } }
+        for (_, mut managed) in self.projects.drain() { let _ = managed.child.wait(); }
+        if let Some(mut child) = self.router.take() { let _ = child.wait(); }
+        if let Some(mut child) = self.proxy.take() { let _ = child.wait(); }
+        if let Some(mut child) = self.tunnel.take() { let _ = child.wait(); }
     }
 
-    fn fail<T>(&mut self, message: String) -> Result<T, String> {
-        self.overall = OverallState::Failed;
-        self.message = message.clone();
-        Err(message)
-    }
+    fn fail<T>(&mut self, message: String) -> Result<T, String> { self.overall = OverallState::Failed; self.message = message.clone(); Err(message) }
 }
 
-impl Drop for ProcessManager {
-    fn drop(&mut self) {
-        self.stop_internal();
-    }
-}
+impl Drop for ProcessManager { fn drop(&mut self) { self.stop_internal(); } }
 
 fn create_job() -> Result<HANDLE, String> {
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if job.is_null() {
-        return Err(format!("无法创建 Windows Job Object：{}", std::io::Error::last_os_error()));
-    }
+    if job.is_null() { return Err(format!("无法创建 Windows Job Object：{}", std::io::Error::last_os_error())); }
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let ok = unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const _,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    };
-    if ok == 0 {
-        unsafe { CloseHandle(job) };
-        return Err(format!("无法配置 Windows Job Object：{}", std::io::Error::last_os_error()));
-    }
+    let ok = unsafe { SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) };
+    if ok == 0 { unsafe { CloseHandle(job) }; return Err(format!("无法配置 Windows Job Object：{}", std::io::Error::last_os_error())); }
     Ok(job)
 }
 
-fn assign_to_job(job: HANDLE, child: &Child) -> Result<(), String> {
-    let process = child.as_raw_handle() as HANDLE;
-    if unsafe { AssignProcessToJobObject(job, process) } == 0 {
-        return Err(format!("无法将进程加入 Job Object：{}", std::io::Error::last_os_error()));
-    }
-    Ok(())
-}
-
-fn require_file(path: &str, label: &str) -> Result<(), String> {
-    if Path::new(path).is_file() { Ok(()) } else { Err(format!("找不到{label}：{path}")) }
-}
-
-fn log_file(path: &Path) -> Result<File, String> {
-    OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("无法打开日志 {}：{error}", path.display()))
-}
-
-fn tcp_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
-    let address = format!("{host}:{port}");
-    address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()).is_some_and(|socket| TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).is_ok())
-}
-
+fn assign_to_job(job: HANDLE, child: &Child) -> Result<(), String> { if unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) } == 0 { Err(format!("无法将进程加入 Job Object：{}", std::io::Error::last_os_error())) } else { Ok(()) } }
+fn terminate_child(child: &mut Child) { let _ = child.kill(); let _ = child.wait(); }
+fn require_file(path: &str, label: &str) -> Result<(), String> { if Path::new(path).is_file() { Ok(()) } else { Err(format!("找不到{label}：{path}")) } }
+fn log_file(path: &Path) -> Result<File, String> { if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| format!("无法创建日志目录：{error}"))?; } OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("无法打开日志 {}：{error}", path.display())) }
+fn tcp_ready(host: &str, port: u16, timeout_ms: u64) -> bool { let address = format!("{host}:{port}"); address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()).is_some_and(|socket| TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).is_ok()) }
 fn http_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
-    let address = format!("{host}:{port}");
-    let Some(socket) = address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()) else { return false; };
-    let Ok(mut stream) = TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)) else { return false; };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(timeout_ms)));
-    let request = format!("GET /readyz HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(request.as_bytes()).is_err() { return false; }
-    let mut buffer = [0_u8; 64];
-    stream.read(&mut buffer).is_ok_and(|count| String::from_utf8_lossy(&buffer[..count]).contains(" 200 "))
+    http_probe(host, port, "/readyz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
+        || http_probe(host, port, "/healthz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
 }
 
-fn wait_for_tcp(host: &str, port: u16, timeout: Duration, child: &mut Child) -> bool {
+fn http_probe(host: &str, port: u16, path: &str, timeout_ms: u64) -> Option<u16> {
+    let address = format!("{host}:{port}");
+    let Some(socket) = address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()) else { return None; };
+    let Ok(mut stream) = TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)) else { return None; };
+    let timeout = Duration::from_millis(timeout_ms);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() { return None; }
+
+    // A single read is not guaranteed to contain the complete status line on
+    // Windows. Read through the end of the headers before parsing the code.
+    let mut response = Vec::with_capacity(512);
+    let mut buffer = [0_u8; 256];
+    while response.len() < 8 * 1024 {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                response.extend_from_slice(&buffer[..count]);
+                if response.windows(4).any(|window| window == b"\r\n\r\n") { break; }
+            }
+            Err(_) => return None,
+        }
+    }
+    parse_http_status(&response)
+}
+
+fn parse_http_status(response: &[u8]) -> Option<u16> {
+    let Some(status_line) = response.split(|byte| *byte == b'\n').next() else { return None; };
+    let status_line = status_line.strip_suffix(b"\r").unwrap_or(status_line);
+    let mut parts = status_line.split(|byte| *byte == b' ');
+    let _version = parts.next();
+    let Some(code) = parts.next() else { return None; };
+    std::str::from_utf8(code).ok().and_then(|value| value.parse::<u16>().ok())
+}
+enum WaitResult { Ready, Exited, TimedOut }
+
+fn wait_for_tcp(host: &str, port: u16, timeout: Duration, child: &mut Child) -> WaitResult {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() { return false; }
-        if tcp_ready(host, port, 300) { return true; }
+        if child.try_wait().ok().flatten().is_some() { return WaitResult::Exited; }
+        if tcp_ready(host, port, 300) { return WaitResult::Ready; }
         thread::sleep(Duration::from_millis(250));
     }
-    false
+    WaitResult::TimedOut
 }
-
-fn wait_for_http(host: &str, port: u16, timeout: Duration, child: &mut Child) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() { return false; }
-        if http_ready(host, port, 500) { return true; }
-        thread::sleep(Duration::from_millis(350));
-    }
-    false
-}
-
-fn read_tail(path: &Path, max_bytes: usize) -> Result<String, std::io::Error> {
-    let bytes = fs::read(path)?;
-    let start = bytes.len().saturating_sub(max_bytes);
-    Ok(String::from_utf8_lossy(&bytes[start..]).to_string())
-}
+fn wait_for_http(host: &str, port: u16, timeout: Duration, child: &mut Child) -> bool { let deadline = Instant::now() + timeout; while Instant::now() < deadline { if child.try_wait().ok().flatten().is_some() { return false; } if http_ready(host, port, 500) { return true; } thread::sleep(Duration::from_millis(350)); } false }
+fn read_tail(path: &Path, max_bytes: usize) -> Result<String, std::io::Error> { let bytes = fs::read(path)?; let start = bytes.len().saturating_sub(max_bytes); Ok(String::from_utf8_lossy(&bytes[start..]).to_string()) }
+fn parse_text_editing_capability(output: &[u8]) -> Option<bool> { serde_json::from_slice::<serde_json::Value>(output).ok()?.get("text_editing").and_then(serde_json::Value::as_bool) }
 
 #[cfg(test)]
 mod tests {
@@ -361,25 +432,52 @@ mod tests {
         let status = manager.status(&AppSettings::default());
         assert_eq!(status.overall, OverallState::Stopped);
         assert!(status.mcp_pid.is_none());
+        assert!(status.proxy_pid.is_none());
         assert!(status.tunnel_pid.is_none());
     }
 
     #[test]
-    #[ignore = "requires installed Delegate tools, Clash, and a Runtime API Key"]
+    fn disabled_project_cannot_be_started() {
+        let mut settings = AppSettings::default();
+        settings.projects[0].enabled = false;
+        let mut manager = ProcessManager::new(PathBuf::from("target/test-logs-disabled"));
+        let error = manager.start_project(&settings, "default").expect_err("disabled project must be rejected");
+        assert!(error.contains("尚未启用"));
+        assert!(manager.projects.is_empty());
+        assert!(manager.proxy.is_none());
+        assert!(manager.tunnel.is_none());
+    }
+
+    #[test]
+    fn http_success_accepts_all_2xx_statuses_and_split_headers() {
+        assert_eq!(parse_http_status(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), Some(200));
+        assert_eq!(parse_http_status(b"HTTP/1.1 204 No Content\r\n\r\n"), Some(204));
+        assert_eq!(parse_http_status(b"HTTP/1.1 201 OK\r\n\r\n"), Some(201));
+        assert_eq!(parse_http_status(b"HTTP/1.1 503 Service Unavailable\r\n\r\n"), Some(503));
+        assert_eq!(parse_http_status(b"HTTP/1.1 OK\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn parses_connector_text_editing_capability_without_exposing_payload() {
+        assert_eq!(parse_text_editing_capability(br#"{"text_editing":true}"#), Some(true));
+        assert_eq!(parse_text_editing_capability(br#"{"text_editing":false}"#), Some(false));
+        assert_eq!(parse_text_editing_capability(br#"{"status":"ok"}"#), None);
+        assert_eq!(parse_text_editing_capability(b"not-json"), None);
+    }
+
+    #[test]
+    #[ignore = "requires installed Delegate tools, mcp-proxy, Clash, and a Runtime API Key"]
     fn live_start_is_idempotent_and_stop_cleans_up() {
         let settings = AppSettings::default();
         let mut manager = ProcessManager::new(PathBuf::from("target/live-test-logs"));
-
         let first = manager.start(&settings).expect("live start should succeed");
         assert_eq!(first.overall, OverallState::Running);
-        assert!(first.mcp_ready && first.tunnel_ready);
-        let first_pids = (first.mcp_pid, first.tunnel_pid);
-
+        assert!(first.mcp_ready && first.mcp_proxy_ready && first.tunnel_ready);
+        let first_pids = (first.mcp_pid, first.proxy_pid, first.tunnel_pid);
         let second = manager.start(&settings).expect("second start should be idempotent");
-        assert_eq!((second.mcp_pid, second.tunnel_pid), first_pids);
-
+        assert_eq!((second.mcp_pid, second.proxy_pid, second.tunnel_pid), first_pids);
         let stopped = manager.stop(&settings);
         assert_eq!(stopped.overall, OverallState::Stopped);
-        assert!(!stopped.mcp_ready && !stopped.tunnel_ready);
+        assert!(!stopped.mcp_ready && !stopped.mcp_proxy_ready && !stopped.tunnel_ready);
     }
 }
