@@ -132,7 +132,7 @@ pub fn open_log_directory(state: State<'_, AppState>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::migrate_project_log_directory;
+    use super::{migrate_project_log_directory, rollback_project_log_directory};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_log_root(label: &str) -> std::path::PathBuf {
@@ -166,6 +166,21 @@ mod tests {
         assert!(error.contains("已存在"));
         assert!(root.join("new-project").exists());
         assert!(root.join("realize").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn log_directory_migration_can_be_rolled_back_without_losing_logs() {
+        let root = temporary_log_root("rollback-logs");
+        let old = root.join("new-project-2");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("router.stderr.log"), "preserved").unwrap();
+
+        assert!(migrate_project_log_directory(&root, "new-project-2", "dcfc").unwrap());
+        rollback_project_log_directory(&root, "new-project-2", "dcfc").unwrap();
+
+        assert!(!root.join("dcfc").exists());
+        assert_eq!(std::fs::read_to_string(old.join("router.stderr.log")).unwrap(), "preserved");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

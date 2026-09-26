@@ -77,7 +77,7 @@ const settings = {
     await page.waitForTimeout(800);
     await page.getByRole("button", { name: "设置" }).click();
     await page.waitForTimeout(200);
-    await page.getByRole("button", { name: "更改 key" }).first().click();
+    await page.getByRole("button", { name: "迁移 Realize 的 Project Key" }).click();
     await page.waitForTimeout(200);
     const metrics = await page.evaluate(() => ({
       viewport: { width: innerWidth, height: innerHeight },
@@ -89,12 +89,13 @@ const settings = {
         const rect = element.getBoundingClientRect();
         return { width: rect.width, height: rect.height, left: rect.left, top: rect.top };
       })(),
+      legacyGuides: document.querySelectorAll(".legacy-key-guide").length,
       clippedText: [...document.querySelectorAll("button, strong, h1, h2")]
         .filter((element) => element.scrollWidth > element.clientWidth + 1)
         .map((element) => element.textContent?.trim())
         .filter(Boolean),
     }));
-    const name = `project-key-settings-${viewport.width}x${viewport.height}.png`;
+    const name = `guided-legacy-key-${viewport.width}x${viewport.height}.png`;
     await page.screenshot({ path: path.join(outputDir, name), fullPage: true });
     results.push({ name, metrics });
     await page.close();

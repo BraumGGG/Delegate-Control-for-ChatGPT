@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:project-identity": "node --test --experimental-strip-types src/projectIdentity.test.ts",
+    "check:project-identity-ui": "node scripts/project-identity-check.cjs",
     "check:multi-project": "node scripts/multi-project-check.cjs",
     "preview": "vite preview",
     "tauri": "tauri"

@@ -36,6 +36,8 @@ ChatGPT Connector / Secure Tunnel
 
 已有 Project Key 只能通过设置页中的显式迁移操作修改。迁移要求先停止全部连接，并会同步更新 DCFC 设置、活动项目引用和项目日志目录。ChatGPT 历史消息、旧提示和外部文档中的旧 `project_id` 无法自动更新，需要手工改用新 key。
 
+对于旧版本生成的 `new-project`、`new-project-2` 等通用 key，设置页会显示引导迁移提示，明确列出“当前 key → 建议 key”。用户可以逐项确认迁移，也可以选择“稍后处理”；DCFC 不会在启动或普通改名时静默改变身份。`ScreenCast → screencast` 这类已经具有明确含义的 key 不会被误判为旧 key。
+
 ## 使用方式
 
 1. 打开 DCFC，在“设置 → 项目目录”中新增项目并选择文档输出目录。

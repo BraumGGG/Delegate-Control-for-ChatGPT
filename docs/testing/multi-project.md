@@ -3,6 +3,8 @@
 ## 已执行
 
 - `npm run build`
+- `npm run test:project-identity`
+- `npm run check:project-identity-ui`
 - `cargo test --manifest-path src-tauri/Cargo.toml`
 - `git diff --check`
 - `scripts/multi-project-check.cjs`
@@ -12,8 +14,11 @@
 - 多项目写入：缺少 `project_id` 时必须在任何文件变化前失败，并返回 `项目名称 (project_id)` 列表
 - 单项目兼容：只有一个启用项目时，写入仍可省略 `project_id`
 - Project Key 迁移：只允许全部连接停止后执行；设置、活动项目引用和日志目录保持一致，失败不留下部分迁移
+- 旧 key 引导：只识别 `new-project` / `new-project-N`，验证建议值、冲突、稍后处理、取消、Realize/DCFC 成功迁移和名称/key 分离
 
 Rust 单元测试覆盖配置迁移、目录/端口/稳定 key 校验、Router 注册表与固定 Proxy TOML 生成、停用项目拒绝启动和空闲进程状态。真实 Tunnel 测试继续使用 `#[ignore]`，因为它需要本机安装依赖和 Runtime API Key。
+
+`scripts/project-identity-check.cjs` 使用可变 Tauri mock 对设置页进行 Playwright 交互验证，并把直接审阅截图写入忽略目录 `artifacts/project-identity-review/`。它覆盖旧 key 引导、会话级延期、取消、重复 key、日志目录冲突、已保存 key 稳定性、Realize/DCFC 迁移结果、新项目建议与非法 key，以及 900px 窗口布局。
 
 ## 桌面自动化状态
 
