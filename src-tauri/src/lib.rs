@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod credentials;
 mod process_manager;
+mod proxy_config;
 
 use config::{app_data_root, load_settings, AppSettings};
 use process_manager::{DelegateStatus, ProcessManager};
@@ -38,6 +39,16 @@ impl AppState {
         let settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
         Ok(self.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.stop(&settings))
     }
+
+    fn start_project(&self, project_id: &str) -> Result<DelegateStatus, String> {
+        let settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+        self.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.start_project(&settings, project_id)
+    }
+
+    fn stop_project(&self, project_id: &str) -> Result<DelegateStatus, String> {
+        let settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+        self.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.stop_project(&settings, project_id)
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -51,6 +62,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     let app_state = AppState::new();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -59,8 +71,13 @@ pub fn run() {
             commands::get_status,
             commands::start_delegate,
             commands::stop_delegate,
+            commands::start_all_projects,
+            commands::stop_all_projects,
+            commands::start_project,
+            commands::stop_project,
             commands::get_settings,
             commands::save_settings,
+            commands::migrate_project_key,
             commands::save_runtime_key,
             commands::read_logs,
             commands::open_log_directory,

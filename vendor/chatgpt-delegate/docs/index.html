@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatGPT Delegate for Codex</title>
+  <meta name="description" content="A Codex skill and local MCP connector pattern that delegates deep research, thinking, writing, and web lookup tasks to ChatGPT Web.">
+  <link rel="canonical" href="https://longbiaochen.github.io/chatgpt-delegate/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ChatGPT Delegate">
+  <meta property="og:title" content="ChatGPT Delegate for Codex">
+  <meta property="og:description" content="Codex orchestrates. ChatGPT Web executes. Local MCP saves Markdown.">
+  <meta property="og:image" content="https://longbiaochen.github.io/chatgpt-delegate/flow.png">
+  <meta property="og:image:width" content="1440">
+  <meta property="og:image:height" content="760">
+  <meta property="og:url" content="https://longbiaochen.github.io/chatgpt-delegate/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@_felixilef_">
+  <meta name="twitter:creator" content="@_felixilef_">
+  <meta name="twitter:title" content="ChatGPT Delegate for Codex">
+  <meta name="twitter:description" content="Codex orchestrates. ChatGPT Web executes. Local MCP saves Markdown.">
+  <meta name="twitter:image" content="https://longbiaochen.github.io/chatgpt-delegate/flow.png">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f8fafc;
+      --ink: #111827;
+      --muted: #475569;
+      --line: #d7dee8;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --accent-ink: #042f2e;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.62;
+    }
+    a {
+      color: inherit;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .wrap {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+    header {
+      padding: 26px 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    nav {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    nav div {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+    .hero {
+      padding: 66px 0 36px;
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 980px;
+      margin: 0;
+      font-size: clamp(44px, 7vw, 84px);
+      line-height: 0.95;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      max-width: 820px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: clamp(19px, 2.2vw, 26px);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 30px;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 10px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .button.secondary {
+      background: transparent;
+      color: var(--accent);
+    }
+    .visual {
+      margin-top: 44px;
+    }
+    .visual img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    section {
+      padding: 34px 0;
+      border-top: 1px solid var(--line);
+    }
+    h2 {
+      margin: 0 0 18px;
+      font-size: clamp(28px, 3vw, 42px);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    p {
+      margin: 0 0 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .card p {
+      color: var(--muted);
+      margin-bottom: 0;
+    }
+    .steps {
+      counter-reset: step;
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .steps li {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .steps li::before {
+      content: counter(step);
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+    }
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #e7eef5;
+    }
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #171717;
+      color: #f7f7f7;
+      line-height: 1.45;
+    }
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+    .note {
+      padding: 18px 20px;
+      border: 1px solid #99d6ce;
+      border-radius: 8px;
+      background: #e8fbf8;
+      color: var(--accent-ink);
+    }
+    footer {
+      padding: 40px 0 64px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    @media (max-width: 820px) {
+      .wrap {
+        width: min(100% - 28px, 1120px);
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .hero {
+        padding-top: 44px;
+      }
+      nav,
+      nav div {
+        display: block;
+      }
+      nav div a {
+        margin-right: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <nav class="wrap">
+      <a href="https://longbiaochen.github.io/">Longbiao Chen</a>
+      <div>
+        <a href="https://github.com/longbiaochen/chatgpt-delegate">GitHub</a>
+        <a href="#data-flow">Data flow</a>
+        <a href="#codex-usage">Codex usage</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Local agent workflow</p>
+        <h1>ChatGPT Delegate for Codex</h1>
+        <p class="subtitle">Ask Codex to hand off deep research, PRD writing, comparison, and quick web lookup tasks to ChatGPT Web. Codex handles orchestration; ChatGPT does the long-form work; a local MCP connector saves the result as Markdown.</p>
+        <div class="actions">
+          <a class="button" href="#codex-usage">Use from Codex</a>
+          <a class="button secondary" href="https://github.com/longbiaochen/chatgpt-delegate">View on GitHub</a>
+        </div>
+        <div class="visual">
+          <img src="flow.png" width="1440" height="760" alt="ChatGPT Delegate data flow from Codex to Chrome, ChatGPT, MCP, and local Markdown">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap grid">
+        <div class="card">
+          <h3>Save Codex tokens</h3>
+          <p>Codex prepares the task and waits for status. It does not generate or read the full body unless you explicitly ask.</p>
+        </div>
+        <div class="card">
+          <h3>Use ChatGPT Web</h3>
+          <p>The actual research, thinking, writing, and browsing happen in the signed-in ChatGPT Web/App surface.</p>
+        </div>
+        <div class="card">
+          <h3>Keep local files</h3>
+          <p>Results land under <code>artifacts/chatgpt-delegation/&lt;task_id&gt;/result.md</code> with metadata.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="profiles">
+      <div class="wrap">
+        <h2>Task Profiles</h2>
+        <div class="grid">
+          <div class="card">
+            <h3><code>research_pro</code></h3>
+            <p>For deep research, community methods, best practices, and long reports with sources.</p>
+          </div>
+          <div class="card">
+            <h3><code>thinking_high</code></h3>
+            <p>For design work, PRDs, planning, comparisons, structured writing, and strategy drafts.</p>
+          </div>
+          <div class="card">
+            <h3><code>instant_web</code></h3>
+            <p>For quick lookup, latest facts, confirmation checks, and short source-backed answers.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-flow">
+      <div class="wrap">
+        <h2>Data Flow</h2>
+        <ol class="steps">
+          <li><span>In Codex, say something like <code>让 ChatGPT 调研一下 xxx</code>, <code>让 ChatGPT 写一个 PRD</code>, or <code>让 ChatGPT 查一下最新情况</code>.</span></li>
+          <li><span>Codex runs <code>chatgpt-delegate prepare</code>, which creates <code>task.json</code>, <code>prompt.md</code>, and a target result path.</span></li>
+          <li><span>Codex starts the local MCP server and a temporary HTTPS tunnel if ChatGPT needs to reach the connector.</span></li>
+          <li><span>Codex opens ChatGPT Web through browser automation and sends the generated prompt to the ChatGPT Delegate connector app.</span></li>
+          <li><span>ChatGPT performs the research, thinking, writing, or web lookup in ChatGPT Web.</span></li>
+          <li><span>ChatGPT calls <code>save_task_result</code> on the MCP connector, writing <code>result.md</code> and <code>result.json</code>.</span></li>
+          <li><span>Codex polls task status and returns only the profile, status, byte count, and local file path by default.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="codex-usage">
+      <div class="wrap">
+        <h2>Use From Codex</h2>
+        <p>Install a Codex skill named <code>chatgpt-delegate</code> and expose a local MCP server with the tool contract below. Then use natural language in Codex:</p>
+        <pre><code>让 ChatGPT 调研一下 100M 上下文大模型的社区方法
+让 ChatGPT 设计一个 ChatGPT x Codex 的 PRD
+让 ChatGPT 查一下 xurl OAuth2 当前最佳实践</code></pre>
+        <p>The important rule is the execution split: Codex orchestrates the browser and file checks; ChatGPT produces the substantive Markdown body.</p>
+      </div>
+    </section>
+
+    <section id="tool-contract">
+      <div class="wrap">
+        <h2>MCP Tool Contract</h2>
+        <pre><code>save_task_result(task_id, title, markdown, summary=None, overwrite=True)
+list_results(limit=20)
+read_result(task_id)
+connector_status()</code></pre>
+        <p>The status tool should make the boundary explicit: <code>codex_execution=false</code>, <code>openai_api=false</code>, and <code>private_chatgpt_api=false</code>.</p>
+        <div class="note">
+          This workflow does not read ChatGPT session tokens, does not call private ChatGPT APIs, and does not require an OpenAI API key for the delegated body generation.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>Public product page for the ChatGPT Delegate workflow. Code and skill files are published in the project repository.</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -6,11 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:project-identity": "node --test --experimental-strip-types src/projectIdentity.test.ts",
+    "check:project-identity-ui": "node scripts/project-identity-check.cjs",
+    "check:multi-project": "node scripts/multi-project-check.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
     "lucide-react": "1.47.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
@@ -21,6 +25,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "6.1.1",
+    "playwright": "^1.63.0",
     "typescript": "latest",
     "vite": "8.3.0"
   }
