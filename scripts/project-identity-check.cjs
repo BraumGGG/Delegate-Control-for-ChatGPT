@@ -85,8 +85,8 @@ async function installMock(page) {
 
 async function openSettings(page) {
   await page.goto(appUrl, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "设置" }).click();
-  await page.getByRole("heading", { name: "连接设置" }).waitFor();
+  await page.getByRole("button", { name: "项目管理" }).click();
+  await page.getByRole("heading", { name: "项目管理" }).waitFor();
 }
 
 async function currentProjectIds(page) {
@@ -119,7 +119,7 @@ async function currentProjectIds(page) {
     assert.deepEqual(await currentProjectIds(page), ["screencast", "new-project", "new-project-2"]);
 
     await page.reload({ waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "设置" }).click();
+    await page.getByRole("button", { name: "项目管理" }).click();
     await page.getByRole("button", { name: "迁移 Realize 的 Project Key" }).click();
     await page.getByText("迁移旧 Project Key").waitFor();
     await page.screenshot({ path: path.join(outputDir, "02-realize-confirmation-1180x800.png"), fullPage: true });
@@ -143,7 +143,7 @@ async function currentProjectIds(page) {
     assert.equal(await screenCastRow.locator(".project-key-display code").innerText(), "screencast");
 
     await page.reload({ waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "设置" }).click();
+    await page.getByRole("button", { name: "项目管理" }).click();
     await page.getByRole("button", { name: "迁移 Realize 的 Project Key" }).click();
     await page.getByRole("button", { name: "确认迁移" }).click();
     await page.getByText(/new-project 迁移为 realize/).waitFor();

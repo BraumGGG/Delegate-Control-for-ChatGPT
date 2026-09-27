@@ -75,29 +75,41 @@ const settings = {
     }, { status, settings });
     await page.goto("http://127.0.0.1:1420", { waitUntil: "networkidle" });
     await page.waitForTimeout(800);
-    await page.getByRole("button", { name: "设置" }).click();
-    await page.waitForTimeout(200);
-    await page.getByRole("button", { name: "迁移 Realize 的 Project Key" }).click();
-    await page.waitForTimeout(200);
-    const metrics = await page.evaluate(() => ({
-      viewport: { width: innerWidth, height: innerHeight },
-      body: { width: document.body.scrollWidth, height: document.body.scrollHeight },
-      root: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
-      migrationPanel: (() => {
-        const element = document.querySelector(".project-key-migration");
-        if (!element) return null;
-        const rect = element.getBoundingClientRect();
-        return { width: rect.width, height: rect.height, left: rect.left, top: rect.top };
-      })(),
-      legacyGuides: document.querySelectorAll(".legacy-key-guide").length,
-      clippedText: [...document.querySelectorAll("button, strong, h1, h2")]
-        .filter((element) => element.scrollWidth > element.clientWidth + 1)
-        .map((element) => element.textContent?.trim())
-        .filter(Boolean),
-    }));
-    const name = `guided-legacy-key-${viewport.width}x${viewport.height}.png`;
-    await page.screenshot({ path: path.join(outputDir, name), fullPage: true });
-    results.push({ name, metrics });
+    for (const view of ["dashboard", "logs", "settings", "migration"]) {
+      if (view === "logs") {
+        await page.getByRole("button", { name: "运行日志", exact: true }).click();
+      } else if (view === "settings" || view === "migration") {
+        await page.getByRole("button", { name: view === "migration" ? "项目管理" : "设置", exact: true }).click();
+        await page.waitForTimeout(200);
+        if (view === "migration") await page.getByRole("button", { name: "迁移 Realize 的 Project Key" }).click();
+      } else {
+        await page.getByRole("button", { name: "首页", exact: true }).click();
+      }
+      await page.waitForTimeout(200);
+      const metrics = await page.evaluate(() => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        body: { width: document.body.scrollWidth, height: document.body.scrollHeight },
+        root: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+        migrationPanel: (() => {
+          const element = document.querySelector(".project-key-migration");
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          return { width: rect.width, height: rect.height, left: rect.left, top: rect.top };
+        })(),
+        legacyGuides: document.querySelectorAll(".legacy-key-guide").length,
+        clippedText: [...document.querySelectorAll("button, strong, h1, h2")]
+          .filter((element) => element.scrollWidth > element.clientWidth + 1)
+          .map((element) => element.textContent?.trim())
+          .filter(Boolean),
+      }));
+      if (metrics.body.width !== viewport.width || metrics.root.width !== viewport.width) {
+        throw new Error(`horizontal overflow at ${view} ${viewport.width}: ${JSON.stringify(metrics)}`);
+      }
+      if (metrics.clippedText.length) throw new Error(`clipped text at ${view} ${viewport.width}: ${metrics.clippedText.join(", ")}`);
+      const name = `${view}-${viewport.width}x${viewport.height}.png`;
+      await page.screenshot({ path: path.join(outputDir, name), fullPage: true });
+      results.push({ name, metrics });
+    }
     await page.close();
   }
   fs.writeFileSync(path.join(outputDir, "metrics.json"), JSON.stringify(results, null, 2));
