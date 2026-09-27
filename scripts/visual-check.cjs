@@ -48,12 +48,26 @@ const settings = {
   active_project_id: "new-project-2",
 };
 
+const canonicalStatus = structuredClone(status);
+canonicalStatus.projects = canonicalStatus.projects.map((project) => ({
+  ...project,
+  project_id: project.project_id === "new-project" ? "realize" : project.project_id === "new-project-2" ? "dcfc" : project.project_id,
+}));
+const canonicalSettings = structuredClone(settings);
+canonicalSettings.projects = canonicalSettings.projects.map((project) => ({
+  ...project,
+  id: project.id === "new-project" ? "realize" : project.id === "new-project-2" ? "dcfc" : project.id,
+}));
+canonicalSettings.active_project_id = "dcfc";
+
 (async () => {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const results = [];
   for (const viewport of [{ width: 1180, height: 800 }, { width: 900, height: 700 }]) {
-    const page = await browser.newPage({ viewport });
-    await page.addInitScript(({ status, settings }) => {
+    for (const view of ["dashboard", "logs", "settings", "migration"]) {
+      const page = await browser.newPage({ viewport });
+      const fixture = view === "migration" ? { status, settings } : { status: canonicalStatus, settings: canonicalSettings };
+      await page.addInitScript(({ status, settings }) => {
       let callbackId = 1;
       window.__TAURI_INTERNALS__ = {
         callbacks: new Map(),
@@ -72,10 +86,9 @@ const settings = {
           return null;
         },
       };
-    }, { status, settings });
-    await page.goto("http://127.0.0.1:1420", { waitUntil: "networkidle" });
-    await page.waitForTimeout(800);
-    for (const view of ["dashboard", "logs", "settings", "migration"]) {
+      }, fixture);
+      await page.goto("http://127.0.0.1:1420", { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
       if (view === "logs") {
         await page.getByRole("button", { name: "运行日志", exact: true }).click();
       } else if (view === "settings" || view === "migration") {
@@ -109,8 +122,8 @@ const settings = {
       const name = `${view}-${viewport.width}x${viewport.height}.png`;
       await page.screenshot({ path: path.join(outputDir, name), fullPage: true });
       results.push({ name, metrics });
+      await page.close();
     }
-    await page.close();
   }
   fs.writeFileSync(path.join(outputDir, "metrics.json"), JSON.stringify(results, null, 2));
   console.log(JSON.stringify(results, null, 2));

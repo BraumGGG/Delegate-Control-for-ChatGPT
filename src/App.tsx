@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Check, ChevronRight, CircleAlert, Copy, Eye, EyeOff, Folder, FolderOpen, Grid2X2, KeyRound, Link2, List, LoaderCircle, MonitorCog, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, RotateCw, Save, Server, Settings2, ShieldCheck, Square, SquareTerminal, Trash2, Unplug } from "lucide-react";
+import { Activity, Check, ChevronRight, CircleAlert, Copy, Eye, EyeOff, Folder, FolderOpen, Grid2X2, KeyRound, Link2, LoaderCircle, MonitorCog, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, RotateCw, Save, Search, Server, Settings2, ShieldCheck, Square, SquareTerminal, Trash2, Unplug } from "lucide-react";
 import { api } from "./api";
 import { getLegacyProjectKeyProposal, PROJECT_KEY_PATTERN, suggestProjectKey, validateProjectKeyCandidate } from "./projectIdentity";
-import type { AppSettings, DelegateStatus, LogSource, ProjectConfig, ViewId } from "./types";
+import type { AppSettings, DelegateStatus, LogSource, ProjectConfig, ProjectRuntimeStatus, ViewId } from "./types";
 
 const EMPTY_STATUS: DelegateStatus = {
   overall: "stopped", proxy_ready: false, router_ready: false, mcp_proxy_ready: false, mcp_ready: false, tunnel_ready: false, proxy_pid: null, router_pid: null, mcp_pid: null, tunnel_pid: null, credential_configured: false, text_editing_available: false, connector_capability_message: "正在检测 Connector 文件编辑能力", message: "正在读取本机状态", projects: [],
@@ -13,7 +13,7 @@ const NAV_ITEMS = [
   { id: "overview" as const, label: "首页", icon: Activity },
   { id: "projects" as const, label: "项目管理", icon: Grid2X2 },
   { id: "logs" as const, label: "运行日志", icon: SquareTerminal },
-  { id: "settings" as const, label: "系统设置", icon: Settings2 },
+  { id: "settings" as const, label: "连接设置", icon: Settings2 },
 ];
 
 type DraftProjectKey = { value: string; automatic: boolean };
@@ -49,6 +49,7 @@ function App() {
   const [migrationProjectId, setMigrationProjectId] = useState<string | null>(null);
   const [migrationKey, setMigrationKey] = useState("");
   const [dismissedLegacyProjectIds, setDismissedLegacyProjectIds] = useState<string[]>([]);
+  const [projectQuery, setProjectQuery] = useState("");
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api.getStatus()); } catch (cause) { setError(String(cause)); }
@@ -78,6 +79,27 @@ function App() {
   }, [view, refreshLogs]);
 
   const copy = useMemo(() => stateCopy(status), [status]);
+  const pageTitle = view === "overview" ? "首页" : view === "projects" ? "项目管理" : view === "logs" ? "运行日志" : "连接设置";
+  const pageEyebrow = view === "overview" ? "CONNECTION CONSOLE" : view === "projects" ? "PROJECT MANAGEMENT" : view === "logs" ? "RUNTIME TRACE" : "LOCAL CONFIGURATION";
+  const globalTone = status.overall === "running" ? "running" : status.overall === "failed" || status.overall === "starting" || status.overall === "stopping" ? "degraded" : "offline";
+  const globalLabel = globalTone === "running" ? "ONLINE" : globalTone === "degraded" ? "DEGRADED" : "OFFLINE";
+  const activeProjectId = selectedProjectId ?? settings?.active_project_id ?? null;
+  const configuredProjects = (settings?.projects.map((configured) => {
+    const runtime = status.projects.find((project) => project.project_id === configured.id);
+    return runtime ?? {
+      project_id: configured.id,
+      name: configured.name,
+      output_directory: configured.output_directory,
+      overall: "stopped",
+      mcp_ready: false,
+      mcp_pid: null,
+      message: configured.enabled ? "项目未启动。" : "项目已停用。",
+    } satisfies ProjectRuntimeStatus;
+  }) ?? status.projects).sort((left, right) => Number(right.project_id === activeProjectId) - Number(left.project_id === activeProjectId));
+  const visibleProjects = configuredProjects.filter((project) => {
+    const query = projectQuery.trim().toLowerCase();
+    return !query || `${project.name} ${project.project_id} ${project.output_directory}`.toLowerCase().includes(query);
+  });
   const isRunning = status.overall === "running" || status.overall === "starting";
   const selectedProject = settings?.projects.find((project) => project.id === selectedProjectId) ?? settings?.projects[0];
   const settingsDirty = settings !== null && savedSettings !== null && (JSON.stringify(settings) !== JSON.stringify(savedSettings) || Object.keys(draftProjectKeys).length > 0);
@@ -231,31 +253,42 @@ function App() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand-mark" aria-label="Delegate Control for ChatGPT"><span className="brand-rail brand-rail-a" /><span className="brand-node" /><span className="brand-rail brand-rail-b" /></div>
+        <div className="brand-lockup" aria-label="Delegate Control for ChatGPT"><div className="brand-mark"><Activity size={18} strokeWidth={2.2} /></div><div className="brand-copy"><strong>Delegate Control</strong><span>for ChatGPT</span></div></div>
         <nav className="nav-list" aria-label="主导航">
           {NAV_ITEMS.map((item) => { const Icon = item.icon; const ariaLabel = item.id === "settings" ? "设置" : item.label; return <button key={item.id} className={`nav-button ${view === item.id ? "is-active" : ""}`} onClick={() => setView(item.id)} title={item.label} aria-label={ariaLabel}><Icon size={19} strokeWidth={1.8} /><span className="nav-label">{item.label}</span></button>; })}
         </nav>
-        <div className="sidebar-status" title={status.overall === "running" ? "连接正常" : "当前未连接"}><StatusDot ready={status.overall === "running"} working={status.overall === "starting"} /></div>
+        <div className="sidebar-status" title={status.overall === "running" ? "连接正常" : "当前未连接"}><div className="sidebar-foot-row"><StatusDot ready={status.overall === "running"} working={status.overall === "starting"} /><span className="sidebar-foot-text">系统运行中</span></div><div className="sidebar-version">v1.0.0 · local control plane</div></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div><div className="product-name">Delegate Control for ChatGPT</div><div className="product-context">CHATGPT CONNECTOR CONSOLE</div></div>
-          <div className="topbar-actions"><button className="icon-button" onClick={refreshStatus} disabled={busy} title="刷新状态" aria-label="刷新状态"><RefreshCw size={18} className={busy ? "spin" : ""} /></button><div className={`connection-pill ${status.overall}`}><StatusDot ready={status.overall === "running"} working={status.overall === "starting"} />{status.overall === "running" ? "ONLINE" : status.overall.toUpperCase()}</div></div>
+          <div className="header-title"><div className="product-context">{pageEyebrow}</div><div className="product-name">{pageTitle}</div></div>
+          <div className="topbar-actions"><button className="icon-button" onClick={refreshStatus} disabled={busy} title="刷新状态" aria-label="刷新状态"><RefreshCw size={18} className={busy ? "spin" : ""} /></button><div className={`connection-pill ${globalTone}`}><StatusDot ready={globalTone === "running"} working={globalTone === "degraded"} />{globalLabel}</div></div>
         </header>
 
         {error && <div className="alert-band error-band" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
         {notice && <div className="alert-band success-band"><Check size={18} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭成功提示">×</button></div>}
 
-        {view === "overview" && <div className="view overview-view">
-          <section className="active-project-banner" aria-label="当前项目"><div><span className="eyebrow">ACTIVE PROJECT</span><strong>{selectedProject?.name ?? "未选择项目"}</strong></div><code>{selectedProject?.output_directory ?? "请在设置中选择项目目录"}</code></section>
-          <section className={`signal-hero ${copy.tone}`}><div className="signal-copy"><div className="signal-heading"><span className="signal-status-icon"><Check size={22} strokeWidth={2.5} /></span><div><div className="eyebrow">CONNECTION STATUS</div><h1>{copy.title}</h1></div></div><p>{status.message || "连接仅在你需要时启动，退出程序会自动清理后台进程。"}</p><div className="hero-actions"><button className={`power-button ${isRunning ? "stop" : "start"}`} onClick={() => handlePower(isRunning ? "stop" : "start")} disabled={busy || status.overall === "stopping"}>{busy ? <LoaderCircle className="spin" size={20} /> : isRunning ? <Unplug size={20} /> : <Power size={20} />}{busy ? "处理中" : isRunning ? "停止全部项目" : "启动全部项目"}</button>{status.overall === "running" && <button className="secondary-button" onClick={() => handlePower("restart")} disabled={busy}><RotateCw size={18} />重新连接</button>}</div></div><div className="signal-visual" aria-hidden><div className="signal-orbit orbit-one" /><div className="signal-orbit orbit-two" /><div className="signal-core"><Link2 size={34} strokeWidth={1.5} /></div><span className="pulse pulse-a" /><span className="pulse pulse-b" /><span className="pulse pulse-c" /></div></section>
+        {view === "overview" && <div className="view overview-view prototype-dashboard">
+          <section className="conn-summary">
+            <div className="conn-left">
+              <div className="conn-status-row"><div className="conn-icon"><Link2 size={22} /></div><div><div className="eyebrow">CONNECTION STATUS</div><div className="conn-title">{copy.title}</div></div></div>
+              <p className="conn-desc">{status.message || "连接仅在需要时启动。"}{selectedProject && <> 当前活跃项目 <b>{selectedProject.name}</b>。</>}</p>
+              <div className="conn-actions"><button className="btn btn-ghost-danger" onClick={() => handlePower(isRunning ? "stop" : "start")} disabled={busy || status.overall === "stopping"}>{busy ? <LoaderCircle className="spin" size={17} /> : isRunning ? <Square size={17} /> : <Power size={17} />}{busy ? "处理中" : isRunning ? "停止全部项目" : "启动全部项目"}</button>{status.overall === "running" && <button className="btn btn-secondary" onClick={() => handlePower("restart")} disabled={busy}><RotateCw size={17} />重新连接</button>}</div>
+            </div>
+            <div className="conn-infra">
+              <InfraCell icon={Network} title="Clash Proxy" detail={settings ? `${settings.proxy_host}` : "127.0.0.1"} ready={status.proxy_ready} />
+              <InfraCell icon={Server} title="Router MCP" detail={`PID ${status.router_pid ?? "—"}`} ready={status.router_ready} />
+              <InfraCell icon={Server} title="MCP Proxy" detail={`PID ${status.proxy_pid ?? "—"}`} ready={status.mcp_proxy_ready} />
+              <InfraCell icon={ShieldCheck} title="Secure Tunnel" detail={`PID ${status.tunnel_pid ?? "—"}`} ready={status.tunnel_ready} />
+            </div>
+          </section>
 
-          <section className="chain-section"><div className="section-heading"><div><span className="eyebrow">CONNECTION PATH</span><h2>共享链路</h2></div><span className="section-note">127.0.0.1 · PRIVATE LOOPBACK</span></div><div className="chain-grid"><ChainItem icon={Network} index="01" title="Clash Proxy" detail={settings ? `${settings.proxy_host}:${settings.proxy_port}` : "127.0.0.1:7897"} ready={status.proxy_ready} /><ChevronRight className="chain-arrow" size={18} /><ChainItem icon={Server} index="02" title="Router MCP" detail={`PID ${status.router_pid ?? "—"}`} ready={status.router_ready} /><ChevronRight className="chain-arrow" size={18} /><ChainItem icon={Server} index="03" title="MCP Proxy" detail={`PID ${status.proxy_pid ?? "—"}`} ready={status.mcp_proxy_ready} /><ChevronRight className="chain-arrow" size={18} /><ChainItem icon={ShieldCheck} index="04" title="Secure Tunnel" detail={`PID ${status.tunnel_pid ?? "—"}`} ready={status.tunnel_ready} /></div></section>
+          <section className="section project-backends-section"><div className="proj-toolbar"><div><div className="eyebrow">PROJECT BACKENDS</div><div className="section-title">项目 <span className="proj-count">{configuredProjects.length}</span></div></div><div className="proj-tools"><label className="search-input-wrap"><Search size={16} /><input className="search-input" aria-label="搜索项目" value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} placeholder="搜索名称 / key / 路径…" /></label><button className="btn btn-primary btn-sm" onClick={addProject}><Plus size={17} />新增项目</button></div></div><div className="proj-scroll"><div className="proj-list">{visibleProjects.map((project) => <ProjectListRow key={project.project_id} project={project} busy={projectBusy === project.project_id} active={project.project_id === selectedProjectId} onSelect={() => setSelectedProjectId(project.project_id)} onStart={() => void handleProjectPower(project.project_id, "start")} onStop={() => void handleProjectPower(project.project_id, "stop")} />)}</div></div></section>
 
-          <section className="project-status-section"><div className="section-heading"><div><span className="eyebrow">PROJECT BACKENDS</span><h2>在线项目</h2></div><span className="section-note">{status.projects.filter((project) => project.overall === "running").length} ONLINE</span></div><div className="project-status-grid">{status.projects.map((project) => <ProjectStatusRow key={project.project_id} project={project} busy={projectBusy === project.project_id} onStart={() => void handleProjectPower(project.project_id, "start")} onStop={() => void handleProjectPower(project.project_id, "stop")} />)}</div></section>
+          <section className="section connection-path-section"><div className="section-head"><div><div className="eyebrow">CONNECTION PATH</div><div className="section-title">共享链路</div></div><span className="section-note">127.0.0.1 · Private Loopback</span></div><div className="path-flow"><PathStep icon={Network} number="01" title="Clash Proxy" detail={settings ? settings.proxy_host : "127.0.0.1"} ready={status.proxy_ready} /><ChevronRight className="path-arrow" size={18} /><PathStep icon={Server} number="02" title="Router MCP" detail={`PID ${status.router_pid ?? "—"}`} ready={status.router_ready} /><ChevronRight className="path-arrow" size={18} /><PathStep icon={Server} number="03" title="MCP Proxy" detail={`PID ${status.proxy_pid ?? "—"}`} ready={status.mcp_proxy_ready} /><ChevronRight className="path-arrow" size={18} /><PathStep icon={ShieldCheck} number="04" title="Secure Tunnel" detail={`PID ${status.tunnel_pid ?? "—"}`} ready={status.tunnel_ready} /></div></section>
 
-          <section className="detail-strip"><div><span>启动模式</span><strong>手动按需</strong></div><div><span>密钥存储</span><strong>{status.credential_configured ? "Windows Credential Manager" : "尚未配置"}</strong></div><div><span>文件编辑</span><strong className={status.text_editing_available ? "capability-ready" : "capability-muted"}>{status.text_editing_available ? "已支持" : "旧 Connector"}</strong></div><div><span>关闭窗口</span><strong>隐藏到系统托盘</strong></div></section>
+          <section className="section operational-meta-section"><div className="meta-row"><div className="meta-cell"><div className="mlabel">启动模式</div><div className="mval">手动按需</div></div><div className="meta-cell"><div className="mlabel">密钥存储</div><div className="mval">{status.credential_configured ? "Windows Credential Manager" : "尚未配置"}</div></div><div className="meta-cell"><div className="mlabel">文件编辑</div><div className={`mval ${status.text_editing_available ? "ok" : ""}`}>{status.text_editing_available ? "已支持" : "旧 Connector"}</div></div><div className="meta-cell"><div className="mlabel">关闭窗口</div><div className="mval">隐藏到系统托盘</div></div></div></section>
         </div>}
 
         {view === "logs" && <div className="view logs-view"><div className="view-heading"><div><span className="eyebrow">RUNTIME TRACE</span><h1>运行日志</h1></div><button className="secondary-button" onClick={() => void api.openLogDirectory()}><FolderOpen size={18} />打开目录</button></div><div className="segmented-control" role="tablist"><button className={logSource === "mcp" ? "is-active" : ""} onClick={() => setLogSource("mcp")}><Server size={16} />项目 MCP</button><button className={logSource === "router" ? "is-active" : ""} onClick={() => setLogSource("router")}><Server size={16} />Router MCP</button><button className={logSource === "proxy" ? "is-active" : ""} onClick={() => setLogSource("proxy")}><Network size={16} />MCP Proxy</button><button className={logSource === "tunnel" ? "is-active" : ""} onClick={() => setLogSource("tunnel")}><ShieldCheck size={16} />Secure Tunnel</button></div>{logSource === "mcp" && <label className="log-project-select"><span>项目</span><select value={logProjectId ?? ""} onChange={(event) => setLogProjectId(event.target.value || null)}>{settings?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}<pre className="log-console">{logs}</pre><div className="log-footer"><StatusDot ready={status.overall === "running"} />每 2.5 秒自动刷新<button className="text-button" onClick={refreshLogs}><RefreshCw size={15} />立即刷新</button></div></div>}
@@ -311,12 +344,20 @@ function App() {
 }
 
 function ChainItem({ icon: Icon, index, title, detail, ready }: { icon: typeof Network; index: string; title: string; detail: string; ready: boolean }) { return <div className={`chain-item ${ready ? "is-ready" : ""}`}><span className="chain-index">{index}</span><Icon size={22} strokeWidth={1.6} /><div><strong>{title}</strong><span>{detail}</span></div><StatusDot ready={ready} /></div>; }
+function InfraItem({ icon: Icon, title, detail, ready, pid }: { icon: typeof Network; title: string; detail: string; ready: boolean; pid: number | null }) { return <div className="infra-item"><span className="infra-icon"><Icon size={17} /></span><div><strong>{title}<StatusDot ready={ready} /></strong><span>{pid ? `PID ${pid}` : detail}</span></div></div>; }
+function InfraCell({ icon: Icon, title, detail, ready }: { icon: typeof Network; title: string; detail: string; ready: boolean }) { return <div className="ic"><div className="icbox"><Icon size={16} /></div><div className="icmeta"><div className="ic-name">{title}<span className={`sdot ${ready ? "running" : "offline"}`} /></div><div className="ic-sub">{detail}</div></div></div>; }
+function PathStep({ icon: Icon, number, title, detail, ready }: { icon: typeof Network; number: string; title: string; detail: string; ready: boolean }) { return <div className="path-step"><span className="num">{number}</span><div className="picon"><Icon size={17} /></div><div><div className="pname">{title}</div><div className="psub">{detail}</div></div><span className={`sdot ${ready ? "running" : "offline"}`} /></div>; }
+function ProjectListRow({ project, busy, active, onSelect, onStart, onStop }: { project: DelegateStatus["projects"][number]; busy: boolean; active: boolean; onSelect: () => void; onStart: () => void; onStop: () => void }) {
+  const running = project.overall === "running" || project.overall === "starting";
+  const stateLabel = project.overall === "running" ? "运行中" : project.overall === "starting" ? "启动中" : project.overall === "failed" ? "启动失败" : "已停止";
+  const avatarTone = project.project_id === "screencast" ? "project-avatar-red" : project.project_id === "realize" ? "project-avatar-purple" : "";
+  return <div className={`lrow ${active ? "active" : ""}`} onClick={onSelect}><div className={`lavatar ${avatarTone}`}>{project.name.slice(0, 1).toUpperCase()}</div><div className="lmain"><div className="lname">{project.name} <span className="lkey">{project.project_id}</span></div><div className="lpath" title={project.output_directory}>{project.output_directory}</div></div><span className="lstate"><span className={`sdot ${project.overall === "failed" ? "error" : running ? "running" : "offline"}`} />{stateLabel}</span><button className="mini-btn" title={running ? "停止" : "启动"} aria-label={running ? `停止${project.name}` : `启动${project.name}`} onClick={(event) => { event.stopPropagation(); running ? onStop() : onStart(); }} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : running ? <Square size={15} /> : <Play size={15} />}</button><button className="mini-btn" title="更多操作" aria-label={`${project.name} 更多操作`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={15} /></button></div>;
+}
 function ProjectStatusRow({ project, busy, onStart, onStop }: { project: DelegateStatus["projects"][number]; busy: boolean; onStart: () => void; onStop: () => void }) {
   const running = project.overall === "running" || project.overall === "starting";
-  const stateLabel = project.overall === "running" ? "运行中" : project.overall === "starting" ? "启动中" : project.overall === "failed" ? "需要处理" : "已停止";
+  const stateLabel = project.overall === "running" ? "运行中" : project.overall === "starting" ? "启动中" : project.overall === "failed" ? "启动失败" : "已停止";
   return <article className={`project-status-row ${project.overall}`}>
-    <div className="project-card-head"><span className="project-icon"><Folder size={20} /></span><div><strong>{project.name}</strong><span title={project.output_directory}>{project.output_directory}</span></div><button className="project-menu-button" title="项目操作" aria-label={`${project.name} 项目操作`}><MoreHorizontal size={18} /></button></div>
-    <div className="project-card-meta"><span className={`state-chip ${project.overall}`}><StatusDot ready={project.mcp_ready} working={project.overall === "starting"} />{stateLabel}</span><code>{project.project_id}</code><button className="icon-button project-power" onClick={running ? onStop : onStart} disabled={busy} title={running ? "停止项目" : "启动项目"} aria-label={running ? `停止${project.name}` : `启动${project.name}`}>{busy ? <LoaderCircle className="spin" size={16} /> : running ? <Square size={16} /> : <Play size={16} />}</button></div>
+    <span className="project-avatar">{project.name.slice(0, 1).toUpperCase()}</span><div className="project-row-main"><strong>{project.name}</strong><code>{project.project_id}</code><span title={project.output_directory}>{project.output_directory}</span></div><span className={`state-chip ${project.overall}`}><StatusDot ready={project.mcp_ready} working={project.overall === "starting"} />{stateLabel}</span><button className="icon-button project-power" onClick={running ? onStop : onStart} disabled={busy} title={running ? "停止项目" : "启动项目"} aria-label={running ? `停止${project.name}` : `启动${project.name}`}>{busy ? <LoaderCircle className="spin" size={16} /> : running ? <Square size={16} /> : <Play size={16} />}</button><button className="project-menu-button" title="更多项目操作" aria-label={`${project.name} 更多项目操作`}><MoreHorizontal size={18} /></button>
   </article>;
 }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
