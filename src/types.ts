@@ -55,5 +55,5 @@ export interface DelegateStatus {
   projects: ProjectRuntimeStatus[];
 }
 
-export type ViewId = "overview" | "logs" | "settings";
+export type ViewId = "overview" | "projects" | "logs" | "settings";
 export type LogSource = "mcp" | "router" | "proxy" | "tunnel";
