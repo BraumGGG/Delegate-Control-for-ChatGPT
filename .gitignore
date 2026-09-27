@@ -8,6 +8,8 @@ src-tauri/target/
 # Local desktop-test environments and evidence
 .client-test/
 artifacts/
+.build/
+.worktrees/
 
 # Local planning/runtime output
 docs/superpowers/
