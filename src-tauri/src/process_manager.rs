@@ -390,7 +390,9 @@ impl ProcessManager {
         // mcp-proxy exposes its Streamable HTTP router at the root path. The
         // project backends behind it still use /mcp, but the shared Tunnel
         // must target the proxy root so initialize requests are not 404.
-        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
+        tunnel_command.args(tunnel_identity_args(settings))
+            .args(["--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()])
+            .env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut tunnel = tunnel_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 Tunnel：{error}") })?;
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &tunnel) {
             terminate_child(&mut tunnel);
@@ -441,6 +443,17 @@ impl ProcessManager {
     }
 
     fn fail<T>(&mut self, message: String) -> Result<T, String> { self.overall = OverallState::Failed; self.message = message.clone(); Err(message) }
+}
+
+fn tunnel_identity_args(settings: &AppSettings) -> Vec<&str> {
+    let mut args = vec!["run"];
+    if !settings.profile_name.trim().is_empty() {
+        args.extend(["--profile", settings.profile_name.as_str()]);
+    }
+    if !settings.tunnel_id.trim().is_empty() {
+        args.extend(["--control-plane.tunnel-id", settings.tunnel_id.as_str()]);
+    }
+    args
 }
 
 impl Drop for ProcessManager { fn drop(&mut self) { self.stop_internal(); } }
@@ -612,6 +625,19 @@ mod tests {
         assert_eq!(parse_text_editing_capability(br#"{"text_editing":false}"#), Some(false));
         assert_eq!(parse_text_editing_capability(br#"{"status":"ok"}"#), None);
         assert_eq!(parse_text_editing_capability(b"not-json"), None);
+    }
+
+    #[test]
+    fn tunnel_id_is_passed_as_runtime_identity_separately_from_profile() {
+        let mut settings = AppSettings::default();
+        settings.profile_name = String::new();
+        settings.tunnel_id = "tunnel_demo_01".to_string();
+        assert_eq!(tunnel_identity_args(&settings), vec!["run", "--control-plane.tunnel-id", "tunnel_demo_01"]);
+
+        settings.profile_name = "legacy-profile".to_string();
+        assert_eq!(tunnel_identity_args(&settings), vec![
+            "run", "--profile", "legacy-profile", "--control-plane.tunnel-id", "tunnel_demo_01",
+        ]);
     }
 
     #[test]

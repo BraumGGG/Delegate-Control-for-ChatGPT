@@ -28,6 +28,8 @@ pub struct AppSettings {
     #[serde(default = "default_health_port")]
     pub health_port: u16,
     pub profile_name: String,
+    #[serde(default)]
+    pub tunnel_id: String,
     pub mcp_executable: String,
     pub proxy_executable: String,
     pub proxy_config_path: String,
@@ -54,10 +56,22 @@ fn default_router_config_path() -> String {
     app_data_root().join("router-projects.json").to_string_lossy().to_string()
 }
 
+fn bundled_mcp_executable() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_default()
+        .join("runtime")
+        .join("chatgpt-delegate-edit")
+        .join("chatgpt-delegate-edit.exe")
+}
+
 fn empty_settings() -> AppSettings {
     let mut settings = AppSettings::default();
     settings.projects.clear();
     settings.active_project_id = None;
+    settings.profile_name.clear();
+    settings.mcp_executable = bundled_mcp_executable().to_string_lossy().to_string();
     settings
 }
 
@@ -81,6 +95,7 @@ impl Default for AppSettings {
             health_host: "127.0.0.1".to_string(),
             health_port: 8080,
             profile_name: "chatgpt-delegate".to_string(),
+            tunnel_id: String::new(),
             mcp_executable: home.join(".local").join("bin").join("chatgpt-delegate.exe").to_string_lossy().to_string(),
             proxy_executable: home.join(".local").join("bin").join("mcp-proxy.exe").to_string_lossy().to_string(),
             proxy_config_path: default_proxy_config_path(),
@@ -373,6 +388,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
             health_host: defaults.health_host,
             health_port: number_or_default(&value, "health_port", defaults.health_port),
             profile_name: string_or_default(&value, "profile_name", defaults.profile_name),
+            tunnel_id: string_or_default(&value, "tunnel_id", defaults.tunnel_id),
             mcp_executable: string_or_default(&value, "mcp_executable", defaults.mcp_executable),
             proxy_executable: defaults.proxy_executable,
             proxy_config_path: defaults.proxy_config_path,
@@ -402,6 +418,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
         health_host: "127.0.0.1".to_string(),
         health_port: number_value("health_port", defaults.health_port),
         profile_name: string_value("profile_name", defaults.profile_name),
+        tunnel_id: string_value("tunnel_id", defaults.tunnel_id),
         mcp_executable: string_value("mcp_executable", defaults.mcp_executable),
         proxy_executable: defaults.proxy_executable,
         proxy_config_path: defaults.proxy_config_path,

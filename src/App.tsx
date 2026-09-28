@@ -24,6 +24,8 @@ type WizardDraft = {
   magicPort: number;
   projectName: string;
   outputDirectory: string;
+  proxyExecutable: string;
+  tunnelExecutable: string;
 };
 
 const WIZARD_DRAFT_KEY = "dcfc.first-run-wizard.v1";
@@ -33,6 +35,8 @@ const DEFAULT_WIZARD_DRAFT: WizardDraft = {
   magicPort: 7877,
   projectName: "",
   outputDirectory: "",
+  proxyExecutable: "",
+  tunnelExecutable: "",
 };
 
 function readWizardDraft(): WizardDraft {
@@ -45,6 +49,8 @@ function readWizardDraft(): WizardDraft {
       magicPort: Number.isInteger(parsed.magicPort) ? Number(parsed.magicPort) : 7877,
       projectName: typeof parsed.projectName === "string" ? parsed.projectName : "",
       outputDirectory: typeof parsed.outputDirectory === "string" ? parsed.outputDirectory : "",
+      proxyExecutable: typeof parsed.proxyExecutable === "string" ? parsed.proxyExecutable : "",
+      tunnelExecutable: typeof parsed.tunnelExecutable === "string" ? parsed.tunnelExecutable : "",
     };
   } catch {
     return DEFAULT_WIZARD_DRAFT;
@@ -115,7 +121,16 @@ function App() {
       setLogProjectId(loaded.projects[0]?.id ?? null);
       if (loaded.projects.length === 0) {
         const draft = readWizardDraft();
-        setWizardDraft({ ...draft, magicPort: draft.magicPort || loaded.proxy_port || 7877 });
+        const restored = {
+          ...draft,
+          magicPort: draft.magicPort || loaded.proxy_port || 7877,
+          proxyExecutable: draft.proxyExecutable || loaded.proxy_executable,
+          tunnelExecutable: draft.tunnelExecutable || loaded.tunnel_executable,
+        };
+        const current = { ...loaded, proxy_executable: restored.proxyExecutable, tunnel_executable: restored.tunnelExecutable };
+        setSettings(current);
+        setWizardDraft(restored);
+        void api.checkRuntimeReadiness(current).then(setRuntimeReadiness).catch((cause) => setWizardError(String(cause)));
         setWizardVisible(true);
       }
     }).catch((cause) => setError(String(cause)));
@@ -235,6 +250,8 @@ function App() {
     if (!settings) return;
     const next = { ...settings, ...patch };
     setSettings(next);
+    if (patch.proxy_executable !== undefined) updateWizardDraft({ proxyExecutable: patch.proxy_executable });
+    if (patch.tunnel_executable !== undefined) updateWizardDraft({ tunnelExecutable: patch.tunnel_executable });
     void api.checkRuntimeReadiness(next).then(setRuntimeReadiness).catch((cause) => setWizardError(String(cause)));
   }
 
@@ -243,17 +260,17 @@ function App() {
     if (typeof selected === "string") updateWizardDraft({ outputDirectory: selected });
   }
 
-  async function chooseWizardExecutable(kind: "mcp" | "proxy" | "tunnel") {
-    const selected = await open({ directory: false, multiple: false, title: kind === "mcp" ? "选择 chatgpt-delegate Connector" : kind === "proxy" ? "选择 mcp-proxy.exe" : "选择 tunnel-client.exe" });
+  async function chooseWizardExecutable(kind: "proxy" | "tunnel") {
+    const selected = await open({ directory: false, multiple: false, title: kind === "proxy" ? "选择 mcp-proxy.exe" : "选择 tunnel-client.exe" });
     if (typeof selected !== "string") return;
-    updateWizardSettings(kind === "mcp" ? { mcp_executable: selected } : kind === "proxy" ? { proxy_executable: selected } : { tunnel_executable: selected });
+    updateWizardSettings(kind === "proxy" ? { proxy_executable: selected } : { tunnel_executable: selected });
   }
 
   async function advanceWizard() {
     if (!settings) return;
     setWizardError("");
     if (wizardDraft.step === 0 && !wizardDependenciesReady) {
-      setWizardError("请先在本机准备好 MCP、MCP Proxy 和 Tunnel 程序，并确认路径可用。");
+      setWizardError("内部运行组件未安装完整，或外部 MCP Proxy / Tunnel Client 路径不可用。");
       return;
     }
     if (wizardDraft.step === 1) {
@@ -310,7 +327,8 @@ function App() {
         proxy_port: wizardDraft.magicPort,
         mcp_proxy_host: "127.0.0.1",
         health_host: "127.0.0.1",
-        profile_name: wizardDraft.tunnelId.trim(),
+        profile_name: "",
+        tunnel_id: wizardDraft.tunnelId.trim(),
         projects: [project],
         active_project_id: project.id,
       };
@@ -602,7 +620,7 @@ function OnboardingWizard({
   onFinish: () => void;
   onCancel: () => void;
   onChooseDirectory: () => void;
-  onChooseExecutable: (kind: "mcp" | "proxy" | "tunnel") => void;
+  onChooseExecutable: (kind: "proxy" | "tunnel") => void;
 }) {
   const steps = [
     ["01", "运行依赖", "确认本机程序"],
@@ -612,7 +630,6 @@ function OnboardingWizard({
     ["05", "完成检查", "确认本地配置"],
   ];
   const dependencyItems = [
-    ["MCP Connector", "mcp", settings.mcp_executable, readiness?.mcp_available ?? false, (value: string) => onSettingsChange({ mcp_executable: value })],
     ["MCP Proxy", "proxy", settings.proxy_executable, readiness?.proxy_available ?? false, (value: string) => onSettingsChange({ proxy_executable: value })],
     ["Tunnel Client", "tunnel", settings.tunnel_executable, readiness?.tunnel_available ?? false, (value: string) => onSettingsChange({ tunnel_executable: value })],
   ] as const;
@@ -628,12 +645,12 @@ function OnboardingWizard({
       </header>
       <div className="wizard-progress" aria-label="配置进度">{steps.map(([number, label, detail], index) => <div className={`wizard-step ${draft.step === index ? "is-current" : ""} ${draft.step > index ? "is-complete" : ""}`} key={number}><span>{draft.step > index ? "✓" : number}</span><div><strong>{label}</strong><small>{detail}</small></div></div>)}</div>
       <section className="wizard-body">
-        <div className="wizard-copy"><div className="wizard-kicker">STEP {String(draft.step + 1).padStart(2, "0")} / 05</div><h1 id="wizard-title">{steps[draft.step][1]}</h1><p>{draft.step === 0 ? "DCFC 使用你提供的本机程序，不会自动下载或替换运行依赖。" : draft.step === 1 ? "Runtime API Key 只写入当前 Windows 账户的安全存储，向导不会显示或保存密钥内容。" : draft.step === 2 ? "Magic 仅作为本机回环代理使用。这里配置端口和用户可见的 Tunnel ID。" : draft.step === 3 ? "创建第一个真实项目。项目 key 与 MCP 端口由 DCFC 自动生成，后续可在项目管理中查看。" : "最后一步只确认本地配置是否完整，不代表已经完成端到端连接。"}</p></div>
-        {draft.step === 0 && <div className="wizard-panel"><div className="wizard-panel-title"><MonitorCog size={19} /><span>运行依赖就绪</span><span className={`wizard-check ${depsReady ? "ready" : ""}`}>{depsReady ? "已就绪" : "待处理"}</span></div><div className="wizard-dependency-list">{dependencyItems.map(([label, kind, value, ready, onChange]) => <div className="wizard-dependency" key={label}><div className="wizard-dependency-meta"><span>{label}</span><code>{value || "尚未指定"}</code></div><span className={`wizard-check ${ready ? "ready" : ""}`}>{ready ? "可用" : "未找到"}</span><div className="wizard-path-input"><input value={value} onChange={(event) => onChange(event.target.value)} aria-label={`${label}路径`} /><button className="icon-button" onClick={() => onChooseExecutable(kind)} title={`选择${label}`} aria-label={`选择${label}`}><FolderOpen size={16} /></button></div></div>)}</div><p className="wizard-hint">外部 MCP Proxy 与 Tunnel 继续由用户提供。选择文件后会重新检查路径，不会把程序复制到项目目录。</p></div>}
+        <div className="wizard-copy"><div className="wizard-kicker">STEP {String(draft.step + 1).padStart(2, "0")} / 05</div><h1 id="wizard-title">{steps[draft.step][1]}</h1><p>{draft.step === 0 ? "DCFC 检查内置运行组件是否完整；MCP Proxy 与 Tunnel Client 由你提供。" : draft.step === 1 ? "Runtime API Key 只写入当前 Windows 账户的安全存储，向导不会显示或保存密钥内容。" : draft.step === 2 ? "Magic 仅作为本机回环代理使用。这里配置端口和用户可见的 Tunnel ID。" : draft.step === 3 ? "创建第一个真实项目。项目 key 与 MCP 端口由 DCFC 自动生成，后续可在项目管理中查看。" : "最后一步只确认本地配置是否完整，不代表已经完成端到端连接。"}</p></div>
+        {draft.step === 0 && <div className="wizard-panel"><div className="wizard-panel-title"><MonitorCog size={19} /><span>运行依赖就绪</span><span className={`wizard-check ${depsReady ? "ready" : ""}`}>{depsReady ? "已就绪" : "待处理"}</span></div><div className="wizard-dependency-list"><div className="wizard-dependency"><div className="wizard-dependency-meta"><span>DCFC 内置运行组件</span><code>{readiness?.mcp_available ? "安装完整" : "未找到；请重新安装 DCFC"}</code></div><span className={`wizard-check ${readiness?.mcp_available ? "ready" : ""}`}>{readiness?.mcp_available ? "可用" : "缺失"}</span></div>{dependencyItems.map(([label, kind, value, ready, onChange]) => <div className="wizard-dependency" key={label}><div className="wizard-dependency-meta"><span>{label}</span><code>{value || "尚未指定"}</code></div><span className={`wizard-check ${ready ? "ready" : ""}`}>{ready ? "可用" : "未找到"}</span><div className="wizard-path-input"><input value={value} onChange={(event) => onChange(event.target.value)} aria-label={`${label}路径`} /><button className="icon-button" onClick={() => onChooseExecutable(kind)} title={`选择${label}`} aria-label={`选择${label}`}><FolderOpen size={16} /></button></div></div>)}</div><p className="wizard-hint">外部程序继续由用户提供。选择文件后会重新检查路径；DCFC 内置组件不需要手工配置。</p></div>}
         {draft.step === 1 && <div className="wizard-panel"><div className="wizard-panel-title"><KeyRound size={19} /><span>OpenAI 连接</span><span className={`wizard-check ${credentialReady ? "ready" : ""}`}>{credentialReady ? "已配置" : "待配置"}</span></div><label className="wizard-field"><span>Runtime API Key</span><input type="password" value={runtimeKey} onChange={(event) => onRuntimeKeyChange(event.target.value)} placeholder={credentialReady ? "已安全保存；如需更换可输入新密钥" : "粘贴 Runtime API Key"} autoComplete="off" /></label><div className="wizard-safe-note"><ShieldCheck size={17} /><span>密钥只发送到 Windows Credential Manager。向导草稿、本地设置和日志中都不会保存密钥。</span></div></div>}
         {draft.step === 2 && <div className="wizard-panel"><div className="wizard-panel-title"><Network size={19} /><span>Magic 与 Tunnel</span><span className={`wizard-check ${draft.tunnelId.trim() && Number.isInteger(draft.magicPort) && draft.magicPort > 0 && draft.magicPort <= 65535 ? "ready" : ""}`}>{draft.tunnelId.trim() && Number.isInteger(draft.magicPort) && draft.magicPort > 0 && draft.magicPort <= 65535 ? "可继续" : "待填写"}</span></div><div className="wizard-form-grid"><label className="wizard-field"><span>Tunnel ID</span><input value={draft.tunnelId} onChange={(event) => onDraftChange({ tunnelId: event.target.value })} placeholder="例如：my-team-tunnel" /></label><label className="wizard-field"><span>Magic 端口</span><input type="number" min={1} max={65535} value={draft.magicPort} onChange={(event) => onDraftChange({ magicPort: Number(event.target.value) })} /></label></div><div className="wizard-fixed-row"><span>Magic 主机</span><code>127.0.0.1</code><small>固定 loopback，不对外监听</small></div></div>}
         {draft.step === 3 && <div className="wizard-panel"><div className="wizard-panel-title"><Plus size={19} /><span>创建首个项目</span><span className={`wizard-check ${projectValid ? "ready" : ""}`}>{projectValid ? "可继续" : "待填写"}</span></div><div className="wizard-form-grid"><label className="wizard-field"><span>项目名称</span><input value={draft.projectName} onChange={(event) => onDraftChange({ projectName: event.target.value })} placeholder="例如：我的项目" /></label><label className="wizard-field"><span>自动生成的 Project Key</span><input value={projectKey} readOnly aria-readonly /></label></div><label className="wizard-field"><span>文档输出目录</span><div className="wizard-path-input"><input value={draft.outputDirectory} onChange={(event) => onDraftChange({ outputDirectory: event.target.value })} placeholder="选择 Windows 绝对路径" /><button className="icon-button" onClick={onChooseDirectory} title="选择输出目录" aria-label="选择输出目录"><FolderOpen size={17} /></button></div></label><div className="wizard-summary-line"><span>MCP 端口</span><code>127.0.0.1:{projectPort}</code><span>启用状态</span><b>创建后可启动</b></div></div>}
-        {draft.step === 4 && <div className="wizard-panel"><div className="wizard-panel-title"><Check size={19} /><span>本地配置检查</span><span className="wizard-check ready">本地可保存</span></div><div className="wizard-review-list"><ReviewLine label="运行依赖" value={depsReady ? "MCP / Proxy / Tunnel 路径可用" : "仍有依赖未就绪"} ready={depsReady} /><ReviewLine label="Runtime API Key" value={credentialReady ? "已配置到安全存储" : "尚未配置"} ready={credentialReady} /><ReviewLine label="Magic" value={`127.0.0.1:${draft.magicPort}`} ready={draft.magicPort > 0 && draft.magicPort <= 65535} /><ReviewLine label="Tunnel ID" value={draft.tunnelId || "尚未填写"} ready={Boolean(draft.tunnelId.trim())} /><ReviewLine label="首个项目" value={`${draft.projectName || "尚未填写"} · ${projectKey}`} ready={projectValid} /></div><p className="wizard-hint">完成后会保存一个真实项目配置，不会创建“默认项目”。连接是否能端到端建立，请在返回控制台后手动启动并查看状态。</p></div>}
+        {draft.step === 4 && <div className="wizard-panel"><div className="wizard-panel-title"><Check size={19} /><span>本地配置检查</span><span className="wizard-check ready">本地可保存</span></div><div className="wizard-review-list"><ReviewLine label="运行依赖" value={depsReady ? "内置组件及外部程序路径可用" : "仍有依赖未就绪"} ready={depsReady} /><ReviewLine label="Runtime API Key" value={credentialReady ? "已配置到安全存储" : "尚未配置"} ready={credentialReady} /><ReviewLine label="Magic" value={`127.0.0.1:${draft.magicPort}`} ready={draft.magicPort > 0 && draft.magicPort <= 65535} /><ReviewLine label="Tunnel ID" value={draft.tunnelId || "尚未填写"} ready={Boolean(draft.tunnelId.trim())} /><ReviewLine label="首个项目" value={`${draft.projectName || "尚未填写"} · ${projectKey}`} ready={projectValid} /></div><p className="wizard-hint">完成后会保存一个真实项目配置，不会创建“默认项目”。连接是否能端到端建立，请在返回控制台后手动启动并查看状态。</p></div>}
         {error && <div className="wizard-error" role="alert"><CircleAlert size={16} />{error}</div>}
       </section>
       <footer className="wizard-footer"><button className="secondary-button" onClick={onCancel}>稍后配置</button><div className="wizard-footer-actions">{draft.step > 0 && <button className="secondary-button" onClick={onBack} disabled={busy}>上一步</button>}{draft.step < 4 ? <button className="btn btn-primary" onClick={onNext} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : <ChevronRight size={16} />}下一步</button> : <button className="btn btn-primary" onClick={onFinish} disabled={busy}><Save size={16} />保存本地配置</button>}</div></footer>

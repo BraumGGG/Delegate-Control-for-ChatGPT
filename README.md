@@ -64,11 +64,11 @@ delete_text_from_file
 - 一个本地 Magic HTTP 代理；在“连接设置”中填写其实际监听端口
 - `mcp-proxy.exe`：从 `joshrotenberg/mcp-proxy` 官方 Release 单独获取；Gate A 验证版本为 v0.4.3
 - `tunnel-client.exe`：从 `openai/tunnel-client` 官方 Release 单独获取；Gate A 验证版本为 v0.0.14
-- `chatgpt-delegate-edit.exe`：当前由项目脚本构建，正式公开发布前仍需确定无需开发工具链的交付方式
+- `chatgpt-delegate-edit.exe`：DCFC 安装包的内置运行组件；如果安装目录缺少该文件，首次运行会提示安装完整性异常，而不会要求普通用户手工选择 Connector 路径
 
 Gate A 的安装包不打包或下载两个外部 exe。下载后请将它们放在本机自选目录；
-在连接设置中指定 MCP Proxy 路径，Tunnel 路径的普通用户配置入口将在 Gate B
-加入。在 Gate B/D 完成前，当前安装包尚不满足新用户开箱即用要求。
+首次运行向导会让用户指定 MCP Proxy 与 Tunnel Client 路径。内置 Connector 由 DCFC
+安装完整性负责，不属于普通用户的运行依赖配置。
 
 默认程序路径：
 
@@ -80,7 +80,7 @@ Gate A 的安装包不打包或下载两个外部 exe。下载后请将它们放
 
 如果 `mcp-proxy.exe` 不在默认路径，可在“设置 → 本机程序”中选择它。启动前 DCFC 会检查所有外部程序是否存在。
 
-编辑版 Connector 构建后，可在“设置 → 本机程序 → MCP”中选择生成的 `chatgpt-delegate-edit.exe`。DCFC 会显示“文件编辑已支持”；如果继续使用旧 Connector，连接仍可启动，但界面会明确显示编辑工具不可用。
+DCFC 会在启动前检查内置 Connector 是否存在，并显示文件编辑能力状态；如果安装目录缺少内置组件，应重新安装 DCFC。用户无需在设置中选择 Connector 路径。
 
 ## 本地开发与构建
 

@@ -18,6 +18,7 @@ export interface AppSettings {
   health_host: string;
   health_port: number;
   profile_name: string;
+  tunnel_id?: string;
   mcp_executable: string;
   proxy_executable: string;
   proxy_config_path: string;
