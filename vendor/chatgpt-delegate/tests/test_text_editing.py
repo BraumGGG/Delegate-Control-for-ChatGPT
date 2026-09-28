@@ -1,4 +1,5 @@
 import hashlib
+import multiprocessing
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,10 +7,33 @@ from pathlib import Path
 from chatgpt_delegate.text_editing import (
     TextEditingError,
     append_text_file,
+    append_handoff_entry,
     delete_text_from_file,
     read_text_file,
     replace_text_in_file,
 )
+
+
+def _append_handoff_worker(root: str, entry_id: str, expected_sha256: str, result_queue) -> None:
+    try:
+        result = append_handoff_entry(
+            Path(root),
+            entry_id,
+            "DEV",
+            "REVIEW",
+            "DONE",
+            "P1",
+            f"Concurrent {entry_id}",
+            [],
+            "Concurrent append test.",
+            "Exactly one writer must succeed.",
+            "Inspect the resulting file.",
+            expected_sha256,
+            1024 * 1024,
+        )
+        result_queue.put({"ok": True, "result": result})
+    except Exception as exc:  # pragma: no cover - exercised in the child process
+        result_queue.put({"ok": False, "error": str(exc)})
 
 
 class TextEditingTestCase(unittest.TestCase):
@@ -98,6 +122,170 @@ class TextEditingTestCase(unittest.TestCase):
             with self.assertRaises(TextEditingError):
                 append_text_file(root, "notes.md", "too-long", None, 4)
             self.assertEqual(path.read_text(encoding="utf-8"), "one")
+
+    def _create_handoff(self, root: Path) -> Path:
+        path = root / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md"
+        path.write_text("# Handoff\n", encoding="utf-8", newline="")
+        return path
+
+    def test_structured_handoff_append_serializes_canonical_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._create_handoff(root)
+            before = read_text_file(root, path.name, 1024 * 1024)
+
+            result = append_handoff_entry(
+                root,
+                "PDH-20260928-010",
+                "DEV",
+                "REVIEW",
+                "DONE",
+                "P1",
+                "Structured append implemented",
+                ["PDH-20260928-009"],
+                "The shared structured append operation is implemented.",
+                "Validation, SHA protection, backup and atomic replacement pass.",
+                "Request PD review.",
+                before["sha256"],
+                1024 * 1024,
+            )
+
+            content = path.read_text(encoding="utf-8")
+            backup_exists = Path(result["backup_path"]).is_file()
+
+        self.assertEqual(result["operation"], "append_handoff_entry")
+        self.assertEqual(result["entry_id"], "PDH-20260928-010")
+        self.assertEqual(result["sha256"], hashlib.sha256(content.encode("utf-8")).hexdigest())
+        self.assertIn("### PDH-20260928-010 [DEV] REVIEW — Structured append implemented", content)
+        self.assertIn("- **Related Entry:** PDH-20260928-009", content)
+        self.assertIn("**Acceptance / Expected Outcome**", content)
+        self.assertTrue(backup_exists)
+
+    def test_structured_handoff_rejects_invalid_fields_and_empty_body(self) -> None:
+        cases = (
+            {"entry_id": "BAD-ID"},
+            {"author": "SYSTEM"},
+            {"entry_type": "UNKNOWN"},
+            {"status": "UNKNOWN"},
+            {"priority": "P4"},
+            {"title": ""},
+            {"related_entries": ["not-an-id"]},
+            {"summary": ""},
+            {"acceptance": ""},
+            {"next_action": ""},
+        )
+        for override in cases:
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                path = self._create_handoff(root)
+                before = read_text_file(root, path.name, 1024 * 1024)
+                fields = {
+                    "entry_id": "PDH-20260928-011",
+                    "author": "DEV",
+                    "entry_type": "REVIEW",
+                    "status": "DONE",
+                    "priority": "P1",
+                    "title": "Valid title",
+                    "related_entries": [],
+                    "summary": "Valid summary",
+                    "acceptance": "Valid acceptance",
+                    "next_action": "Valid next action",
+                    "expected_sha256": before["sha256"],
+                    "max_bytes": 1024 * 1024,
+                }
+                fields.update(override)
+                with self.assertRaises(TextEditingError):
+                    append_handoff_entry(root, **fields)
+                self.assertEqual(path.read_bytes(), b"# Handoff\n")
+
+    def test_structured_handoff_rejects_duplicate_and_stale_sha_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._create_handoff(root)
+            before = read_text_file(root, path.name, 1024 * 1024)
+            append_handoff_entry(
+                root,
+                "PDH-20260928-012",
+                "DEV",
+                "REVIEW",
+                "DONE",
+                "P1",
+                "First entry",
+                [],
+                "Summary",
+                "Acceptance",
+                "Next action",
+                before["sha256"],
+                1024 * 1024,
+            )
+            after_first = path.read_bytes()
+            current = read_text_file(root, path.name, 1024 * 1024)
+
+            with self.assertRaises(TextEditingError):
+                append_handoff_entry(
+                    root,
+                    "PDH-20260928-012",
+                    "DEV",
+                    "REVIEW",
+                    "DONE",
+                    "P1",
+                    "Duplicate",
+                    [],
+                    "Summary",
+                    "Acceptance",
+                    "Next action",
+                    current["sha256"],
+                    1024 * 1024,
+                )
+            self.assertEqual(path.read_bytes(), after_first)
+
+            path_before_stale = path.read_bytes()
+            with self.assertRaises(TextEditingError):
+                append_handoff_entry(
+                    root,
+                    "PDH-20260928-013",
+                    "DEV",
+                    "REVIEW",
+                    "DONE",
+                    "P1",
+                    "Stale",
+                    [],
+                    "Summary",
+                    "Acceptance",
+                    "Next action",
+                    before["sha256"],
+                    1024 * 1024,
+                )
+            self.assertEqual(path.read_bytes(), path_before_stale)
+
+    def test_structured_handoff_concurrent_append_has_one_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._create_handoff(root)
+            expected_sha = read_text_file(root, path.name, 1024 * 1024)["sha256"]
+            context = multiprocessing.get_context("spawn")
+            result_queue = context.Queue()
+            processes = [
+                context.Process(
+                    target=_append_handoff_worker,
+                    args=(str(root), f"PDH-20260928-01{index}", expected_sha, result_queue),
+                )
+                for index in (4, 5)
+            ]
+            for process in processes:
+                process.start()
+            results = [result_queue.get(timeout=15) for _ in processes]
+            for process in processes:
+                process.join(timeout=15)
+
+            content = path.read_text(encoding="utf-8")
+
+        self.assertEqual(sum(result["ok"] for result in results), 1)
+        self.assertEqual(
+            content.count("### PDH-20260928-014") + content.count("### PDH-20260928-015"),
+            1,
+        )
+        self.assertEqual(content.count("Concurrent append test."), 1)
 
 
 if __name__ == "__main__":

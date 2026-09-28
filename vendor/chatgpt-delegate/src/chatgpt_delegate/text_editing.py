@@ -5,13 +5,44 @@ import os
 import re
 import shutil
 import tempfile
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Iterator
 
 
 class TextEditingError(ValueError):
     """A safe, user-facing error raised by text editing operations."""
+
+
+HANDOFF_FILENAME = "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md"
+HANDOFF_ENTRY_ID_PATTERN = re.compile(r"PDH-\d{8}-\d{3}\Z")
+HANDOFF_AUTHORS = {"PD", "DEV", "USER"}
+HANDOFF_TYPES = {
+    "DESIGN",
+    "TASK",
+    "QUESTION",
+    "ANSWER",
+    "FEEDBACK",
+    "ISSUE",
+    "CHANGE",
+    "REVIEW",
+    "DECISION",
+    "HANDOFF",
+}
+HANDOFF_STATUSES = {
+    "OPEN",
+    "IN_PROGRESS",
+    "BLOCKED",
+    "NEEDS_REVIEW",
+    "ACCEPTED",
+    "REJECTED",
+    "DONE",
+    "SUPERSEDED",
+}
+HANDOFF_PRIORITIES = {"P0", "P1", "P2", "P3", "N/A"}
+HANDOFF_LOCK_TIMEOUT_SECONDS = 10.0
 
 
 def _utc_timestamp() -> str:
@@ -99,6 +130,170 @@ def _check_expected_sha256(raw: bytes, expected_sha256: str | None) -> None:
     actual = _sha256(raw)
     if actual != expected:
         raise TextEditingError("file changed since it was read; expected_sha256 does not match")
+
+
+@contextmanager
+def _handoff_lock(root: Path) -> Iterator[None]:
+    """OS-managed file locks are released even if the writer process exits."""
+    backup_dir = root / ".dcfc-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = backup_dir / f".{HANDOFF_FILENAME}.lock"
+    deadline = time.monotonic() + HANDOFF_LOCK_TIMEOUT_SECONDS
+    with open(lock_path, "a+b") as lock_file:
+        lock_file.seek(0)
+        if lock_file.read(1) != b"\0":
+            lock_file.seek(0)
+            lock_file.write(b"\0")
+            lock_file.flush()
+        if os.name == "nt":
+            import msvcrt
+        else:
+            import fcntl
+
+        while True:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (OSError, BlockingIOError) as exc:
+                if time.monotonic() >= deadline:
+                    raise TextEditingError("could not acquire handoff append lock before timeout") from exc
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _validate_handoff_scalar(value: str, field_name: str, *, multiline: bool = False) -> str:
+    if not isinstance(value, str):
+        raise TextEditingError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise TextEditingError(f"{field_name} is required")
+    if "\x00" in normalized:
+        raise TextEditingError(f"{field_name} contains an invalid null byte")
+    if not multiline and any(character in normalized for character in "\r\n"):
+        raise TextEditingError(f"{field_name} must be a single line")
+    return normalized.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _validate_handoff_entry_id(value: str, field_name: str = "entry_id") -> str:
+    normalized = _validate_handoff_scalar(value, field_name)
+    if not HANDOFF_ENTRY_ID_PATTERN.fullmatch(normalized):
+        raise TextEditingError(f"{field_name} must match PDH-YYYYMMDD-NNN")
+    return normalized
+
+
+def _validate_handoff_enum(value: str, field_name: str, allowed: set[str]) -> str:
+    normalized = _validate_handoff_scalar(value, field_name)
+    if normalized not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise TextEditingError(f"invalid {field_name}: {normalized}; expected one of {choices}")
+    return normalized
+
+
+def _normalize_related_entries(related_entries: list[str] | tuple[str, ...] | None) -> str:
+    if related_entries is None:
+        return "N/A"
+    if not isinstance(related_entries, (list, tuple)):
+        raise TextEditingError("related_entries must be a list of strings")
+    normalized: list[str] = []
+    for index, entry in enumerate(related_entries):
+        normalized.append(_validate_handoff_entry_id(entry, f"related_entries[{index}]"))
+    return ", ".join(normalized) if normalized else "N/A"
+
+
+def _serialize_handoff_entry(
+    entry_id: str,
+    author: str,
+    entry_type: str,
+    status: str,
+    priority: str,
+    title: str,
+    related: str,
+    summary: str,
+    acceptance: str,
+    next_action: str,
+) -> str:
+    timestamp = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    return (
+        "---\n\n"
+        f"### {entry_id} [{author}] {entry_type} — {title}\n\n"
+        f"- **Author:** [{author}]\n"
+        f"- **Timestamp:** {timestamp}\n"
+        f"- **Type:** {entry_type}\n"
+        f"- **Status:** {status}\n"
+        f"- **Priority:** {priority}\n"
+        f"- **Related Entry:** {related}\n\n"
+        f"{summary}\n\n"
+        "**Acceptance / Expected Outcome**\n\n"
+        f"{acceptance}\n\n"
+        "**Next Action**\n\n"
+        f"{next_action}\n"
+    )
+
+
+def append_handoff_entry(
+    output_dir: Path,
+    entry_id: str,
+    author: str,
+    entry_type: str,
+    status: str,
+    priority: str,
+    title: str,
+    related_entries: list[str] | tuple[str, ...] | None,
+    summary: str,
+    acceptance: str,
+    next_action: str,
+    expected_sha256: str,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Append one validated, canonical entry to the fixed handoff document."""
+    normalized_id = _validate_handoff_entry_id(entry_id)
+    normalized_author = _validate_handoff_enum(author, "author", HANDOFF_AUTHORS)
+    normalized_type = _validate_handoff_enum(entry_type, "entry_type", HANDOFF_TYPES)
+    normalized_status = _validate_handoff_enum(status, "status", HANDOFF_STATUSES)
+    normalized_priority = _validate_handoff_enum(priority, "priority", HANDOFF_PRIORITIES)
+    normalized_title = _validate_handoff_scalar(title, "title")
+    normalized_summary = _validate_handoff_scalar(summary, "summary", multiline=True)
+    normalized_acceptance = _validate_handoff_scalar(acceptance, "acceptance", multiline=True)
+    normalized_next_action = _validate_handoff_scalar(next_action, "next_action", multiline=True)
+    related = _normalize_related_entries(related_entries)
+    if not isinstance(expected_sha256, str) or not expected_sha256.strip():
+        raise TextEditingError("expected_sha256 is required")
+
+    root = output_dir.expanduser().resolve()
+    path = resolve_text_path(root, HANDOFF_FILENAME)
+    with _handoff_lock(root):
+        original, raw = _read_file(path, max_bytes)
+        _check_expected_sha256(raw, expected_sha256)
+        if re.search(rf"^###\s+{re.escape(normalized_id)}(?:\s|\[|$)", original, flags=re.MULTILINE):
+            raise TextEditingError(f"handoff entry already exists: {normalized_id}")
+        entry = _serialize_handoff_entry(
+            normalized_id,
+            normalized_author,
+            normalized_type,
+            normalized_status,
+            normalized_priority,
+            normalized_title,
+            related,
+            normalized_summary,
+            normalized_acceptance,
+            normalized_next_action,
+        )
+        separator = "" if original.endswith(("\n", "\r")) else "\n"
+        result = _atomic_write(root, path, original + separator + entry, max_bytes, raw)
+
+    result.update({"operation": "append_handoff_entry", "entry_id": normalized_id})
+    return result
 
 
 def _backup_path(root: Path, path: Path) -> Path:

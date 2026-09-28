@@ -15,6 +15,7 @@ from .connector import (
     save_task_result_file,
 )
 from .text_editing import (
+    append_handoff_entry as append_handoff_entry_operation,
     append_text_file as append_text_file_operation,
     delete_text_from_file as delete_text_from_file_operation,
     read_text_file as read_text_file_operation,
@@ -156,7 +157,13 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
             "projects": [{"project_id": item.project_id, "name": item.name, "enabled": item.enabled} for item in projects],
             "active_project_id": active,
             "text_editing": True,
-            "text_editing_tools": ["read_text_file", "append_text_file", "replace_text_in_file", "delete_text_from_file"],
+            "text_editing_tools": [
+                "read_text_file",
+                "append_text_file",
+                "append_handoff_entry",
+                "replace_text_in_file",
+                "delete_text_from_file",
+            ],
             "codex_execution": False,
             "openai_api": False,
             "private_chatgpt_api": False,
@@ -176,6 +183,38 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
     ) -> dict[str, Any]:
         """Append text to a selected project file."""
         return append_text_file_operation(resolve_project(project_id).output_directory, filename, content, expected_sha256, max_bytes)
+
+    @mcp.tool(annotations=local_write)
+    def append_handoff_entry(
+        entry_id: str,
+        author: str,
+        entry_type: str,
+        status: str,
+        priority: str,
+        title: str,
+        related_entries: list[str],
+        summary: str,
+        acceptance: str,
+        next_action: str,
+        expected_sha256: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one validated entry to a selected project's handoff document."""
+        return append_handoff_entry_operation(
+            resolve_project(project_id).output_directory,
+            entry_id,
+            author,
+            entry_type,
+            status,
+            priority,
+            title,
+            related_entries,
+            summary,
+            acceptance,
+            next_action,
+            expected_sha256,
+            max_bytes,
+        )
 
     @mcp.tool(annotations=local_write)
     def replace_text_in_file(

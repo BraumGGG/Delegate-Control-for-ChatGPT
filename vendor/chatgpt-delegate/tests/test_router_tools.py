@@ -61,6 +61,7 @@ class RouterToolsTestCase(unittest.TestCase):
             "connector_status",
             "read_text_file",
             "append_text_file",
+            "append_handoff_entry",
             "replace_text_in_file",
             "delete_text_from_file",
         }
@@ -76,6 +77,8 @@ class RouterToolsTestCase(unittest.TestCase):
             beta.mkdir()
             (alpha / "notes.md").write_text("alpha", encoding="utf-8")
             (beta / "notes.md").write_text("beta", encoding="utf-8")
+            (alpha / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md").write_text("# Alpha\n", encoding="utf-8")
+            (beta / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md").write_text("# Beta\n", encoding="utf-8")
             registry = root / "projects.json"
             registry.write_text(
                 json.dumps(
@@ -91,11 +94,34 @@ class RouterToolsTestCase(unittest.TestCase):
             )
             _, functions = self._create_server_and_tools(registry)
             functions["append_text_file"]("notes.md", "-edited", project_id="beta")
+            before = functions["read_text_file"]("PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md", project_id="beta")
+            functions["append_handoff_entry"](
+                "PDH-20260928-017",
+                "DEV",
+                "REVIEW",
+                "DONE",
+                "P1",
+                "Router structured append",
+                [],
+                "Router resolves the explicit project before appending.",
+                "Only the beta handoff is changed.",
+                "Request review.",
+                before["sha256"],
+                project_id="beta",
+            )
             status = functions["connector_status"]("beta")
             unknown = functions["read_text_file"]
 
             self.assertEqual((beta / "notes.md").read_text(encoding="utf-8"), "beta\n-edited")
             self.assertEqual((alpha / "notes.md").read_text(encoding="utf-8"), "alpha")
+            self.assertIn(
+                "PDH-20260928-017",
+                (beta / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "PDH-20260928-017",
+                (alpha / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md").read_text(encoding="utf-8"),
+            )
             self.assertEqual(status["current_project"], "beta")
             with self.assertRaises(ValueError):
                 unknown("notes.md", project_id="missing")

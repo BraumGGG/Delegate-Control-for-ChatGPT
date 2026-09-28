@@ -47,6 +47,7 @@ class ConnectorToolsTestCase(unittest.TestCase):
             "connector_status",
             "read_text_file",
             "append_text_file",
+            "append_handoff_entry",
             "replace_text_in_file",
             "delete_text_from_file",
         }
@@ -73,6 +74,33 @@ class ConnectorToolsTestCase(unittest.TestCase):
         self.assertEqual(deleted["deleted_occurrences"], 1)
         self.assertTrue(status["text_editing"])
         self.assertIn("replace_text_in_file", status["text_editing_tools"])
+        self.assertIn("append_handoff_entry", status["text_editing_tools"])
+
+    def test_structured_handoff_tool_appends_fixed_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            handoff = root / "PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md"
+            handoff.write_text("# Handoff\n", encoding="utf-8", newline="")
+            _, functions = self._create_server_and_tools(root)
+            before = functions["read_text_file"](handoff.name)
+            result = functions["append_handoff_entry"](
+                "PDH-20260928-016",
+                "DEV",
+                "REVIEW",
+                "DONE",
+                "P1",
+                "Connector structured append",
+                [],
+                "Connector wrapper delegates to the shared operation.",
+                "The fixed handoff document is updated.",
+                "Request review.",
+                before["sha256"],
+            )
+
+            content = handoff.read_text(encoding="utf-8")
+
+        self.assertEqual(result["entry_id"], "PDH-20260928-016")
+        self.assertIn("### PDH-20260928-016 [DEV] REVIEW — Connector structured append", content)
 
     def test_capabilities_command_is_machine_readable(self) -> None:
         with patch("sys.stdout.write") as write:
@@ -85,6 +113,7 @@ class ConnectorToolsTestCase(unittest.TestCase):
         self.assertTrue(payload["fixed_router"])
         self.assertTrue(payload["text_editing"])
         self.assertIn("append_text_file", payload["text_editing_tools"])
+        self.assertIn("append_handoff_entry", payload["text_editing_tools"])
 
 
 if __name__ == "__main__":

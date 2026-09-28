@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .text_editing import (
+    append_handoff_entry as append_handoff_entry_operation,
     append_text_file as append_text_file_operation,
     delete_text_from_file as delete_text_from_file_operation,
     read_text_file as read_text_file_operation,
@@ -490,6 +491,7 @@ def create_mcp_server(
         "Markdown. Legacy save_markdown_report remains available only for older prompts. "
         "Text editing tools accept only relative UTF-8 text paths inside the configured project "
         "directory. Replacement and deletion require an exact match count and reject stale files."
+        " Use append_handoff_entry for validated append-only updates to the handoff document."
     )
     mcp = FastMCP(
         name="chatgpt-delegate",
@@ -579,6 +581,7 @@ def create_mcp_server(
             "text_editing_tools": [
                 "read_text_file",
                 "append_text_file",
+                "append_handoff_entry",
                 "replace_text_in_file",
                 "delete_text_from_file",
             ],
@@ -600,6 +603,37 @@ def create_mcp_server(
     ) -> dict[str, Any]:
         """Append text to an existing UTF-8 file with optional stale-file protection."""
         return append_text_file_operation(output_dir, filename, content, expected_sha256, max_bytes)
+
+    @mcp.tool(annotations=local_report_write)
+    def append_handoff_entry(
+        entry_id: str,
+        author: str,
+        entry_type: str,
+        status: str,
+        priority: str,
+        title: str,
+        related_entries: list[str],
+        summary: str,
+        acceptance: str,
+        next_action: str,
+        expected_sha256: str,
+    ) -> dict[str, Any]:
+        """Append one validated entry to the project's handoff document."""
+        return append_handoff_entry_operation(
+            output_dir,
+            entry_id,
+            author,
+            entry_type,
+            status,
+            priority,
+            title,
+            related_entries,
+            summary,
+            acceptance,
+            next_action,
+            expected_sha256,
+            max_bytes,
+        )
 
     @mcp.tool(annotations=local_report_write)
     def replace_text_in_file(
@@ -710,6 +744,7 @@ def command_capabilities(args: argparse.Namespace) -> int:
                 "text_editing_tools": [
                     "read_text_file",
                     "append_text_file",
+                    "append_handoff_entry",
                     "replace_text_in_file",
                     "delete_text_from_file",
                 ],
