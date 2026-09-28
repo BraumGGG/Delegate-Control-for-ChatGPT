@@ -55,5 +55,12 @@ export interface DelegateStatus {
   projects: ProjectRuntimeStatus[];
 }
 
+export interface RuntimeReadiness {
+  mcp_available: boolean;
+  proxy_available: boolean;
+  tunnel_available: boolean;
+  credential_configured: boolean;
+}
+
 export type ViewId = "overview" | "projects" | "logs" | "settings";
 export type LogSource = "mcp" | "router" | "proxy" | "tunnel";

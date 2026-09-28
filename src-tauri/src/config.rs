@@ -525,6 +525,19 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_project_counts_remain_valid_for_onboarding_bypass_and_resume() {
+        let root = std::env::temp_dir().join(format!("dcfc-onboarding-counts-{}", std::process::id()));
+        for count in [0, 1, 3, 12] {
+            let mut settings = settings_with_projects(count, &root.join(format!("count-{count}")));
+            if count == 0 {
+                settings.active_project_id = None;
+            }
+            assert!(settings.validate().is_ok(), "project count {count} should remain valid");
+            assert_eq!(settings.projects.len(), count);
+        }
+    }
+
+    #[test]
     fn creates_safe_backend_slug() {
         assert_eq!(backend_slug("Client A").unwrap(), "client-a");
         assert!(backend_slug("!!!").is_err());

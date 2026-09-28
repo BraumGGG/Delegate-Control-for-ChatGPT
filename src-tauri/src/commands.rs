@@ -13,6 +13,17 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<crate::process_man
 }
 
 #[tauri::command]
+pub fn get_runtime_readiness(state: State<'_, AppState>) -> Result<crate::process_manager::RuntimeReadiness, String> {
+    let settings = state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+    Ok(crate::process_manager::ProcessManager::runtime_readiness(&settings))
+}
+
+#[tauri::command]
+pub fn check_runtime_readiness(settings: AppSettings) -> crate::process_manager::RuntimeReadiness {
+    crate::process_manager::ProcessManager::runtime_readiness(&settings)
+}
+
+#[tauri::command]
 pub async fn start_delegate(state: State<'_, AppState>) -> Result<crate::process_manager::DelegateStatus, String> {
     let app_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || app_state.start()).await.map_err(|error| format!("启动任务异常：{error}"))?

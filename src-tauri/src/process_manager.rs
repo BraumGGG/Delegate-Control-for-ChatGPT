@@ -37,6 +37,14 @@ pub struct DelegateStatus {
     pub projects: Vec<ProjectRuntimeStatus>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeReadiness {
+    pub mcp_available: bool,
+    pub proxy_available: bool,
+    pub tunnel_available: bool,
+    pub credential_configured: bool,
+}
+
 struct ManagedProject { child: Child }
 
 pub struct ProcessManager {
@@ -217,6 +225,15 @@ impl ProcessManager {
     }
 
     pub fn log_dir(&self) -> &Path { &self.log_dir }
+
+    pub fn runtime_readiness(settings: &AppSettings) -> RuntimeReadiness {
+        RuntimeReadiness {
+            mcp_available: Path::new(&settings.mcp_executable).is_file(),
+            proxy_available: Path::new(&settings.proxy_executable).is_file(),
+            tunnel_available: Path::new(&settings.tunnel_executable).is_file(),
+            credential_configured: credentials::credential_exists(),
+        }
+    }
 
     pub fn is_stopped(&self) -> bool {
         self.projects.is_empty() && self.proxy.is_none() && self.router.is_none() && self.tunnel.is_none()

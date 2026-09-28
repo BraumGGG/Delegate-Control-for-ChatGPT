@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Check, ChevronRight, CircleAlert, Copy, Eye, EyeOff, Folder, FolderOpen, Grid2X2, KeyRound, Link2, LoaderCircle, MonitorCog, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, RotateCw, Save, Search, Server, Settings2, ShieldCheck, Square, SquareTerminal, Trash2, Unplug } from "lucide-react";
 import { api } from "./api";
 import { getLegacyProjectKeyProposal, PROJECT_KEY_PATTERN, suggestProjectKey, validateProjectKeyCandidate } from "./projectIdentity";
-import type { AppSettings, DelegateStatus, LogSource, ProjectConfig, ProjectRuntimeStatus, ViewId } from "./types";
+import type { AppSettings, DelegateStatus, LogSource, ProjectConfig, ProjectRuntimeStatus, RuntimeReadiness, ViewId } from "./types";
 
 const EMPTY_STATUS: DelegateStatus = {
   overall: "stopped", proxy_ready: false, router_ready: false, mcp_proxy_ready: false, mcp_ready: false, tunnel_ready: false, proxy_pid: null, router_pid: null, mcp_pid: null, tunnel_pid: null, credential_configured: false, text_editing_available: false, connector_capability_message: "正在检测 Connector 文件编辑能力", message: "正在读取本机状态", projects: [],
@@ -17,6 +17,43 @@ const NAV_ITEMS = [
 ];
 
 type DraftProjectKey = { value: string; automatic: boolean };
+type WizardStep = 0 | 1 | 2 | 3 | 4;
+type WizardDraft = {
+  step: WizardStep;
+  tunnelId: string;
+  magicPort: number;
+  projectName: string;
+  outputDirectory: string;
+};
+
+const WIZARD_DRAFT_KEY = "dcfc.first-run-wizard.v1";
+const DEFAULT_WIZARD_DRAFT: WizardDraft = {
+  step: 0,
+  tunnelId: "",
+  magicPort: 7877,
+  projectName: "",
+  outputDirectory: "",
+};
+
+function readWizardDraft(): WizardDraft {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WIZARD_DRAFT_KEY) ?? "null") as Partial<WizardDraft> | null;
+    if (!parsed) return DEFAULT_WIZARD_DRAFT;
+    return {
+      step: [0, 1, 2, 3, 4].includes(Number(parsed.step)) ? Number(parsed.step) as WizardStep : 0,
+      tunnelId: typeof parsed.tunnelId === "string" ? parsed.tunnelId : "",
+      magicPort: Number.isInteger(parsed.magicPort) ? Number(parsed.magicPort) : 7877,
+      projectName: typeof parsed.projectName === "string" ? parsed.projectName : "",
+      outputDirectory: typeof parsed.outputDirectory === "string" ? parsed.outputDirectory : "",
+    };
+  } catch {
+    return DEFAULT_WIZARD_DRAFT;
+  }
+}
+
+function isAbsoluteWindowsPath(value: string) {
+  return /^[A-Za-z]:[\\/]/.test(value.trim()) || /^\\\\[^\\]/.test(value.trim());
+}
 
 function stateCopy(status: DelegateStatus) {
   if (status.overall === "running") return { eyebrow: "LINK ESTABLISHED", title: "连接已建立", tone: "online" };
@@ -50,9 +87,18 @@ function App() {
   const [migrationKey, setMigrationKey] = useState("");
   const [dismissedLegacyProjectIds, setDismissedLegacyProjectIds] = useState<string[]>([]);
   const [projectQuery, setProjectQuery] = useState("");
+  const [runtimeReadiness, setRuntimeReadiness] = useState<RuntimeReadiness | null>(null);
+  const [wizardDraft, setWizardDraft] = useState<WizardDraft>(DEFAULT_WIZARD_DRAFT);
+  const [wizardVisible, setWizardVisible] = useState(false);
+  const [wizardRuntimeKey, setWizardRuntimeKey] = useState("");
+  const [wizardError, setWizardError] = useState("");
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api.getStatus()); } catch (cause) { setError(String(cause)); }
+  }, []);
+
+  const refreshRuntimeReadiness = useCallback(async () => {
+    try { setRuntimeReadiness(await api.getRuntimeReadiness()); } catch (cause) { setError(String(cause)); }
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -61,15 +107,26 @@ function App() {
 
   useEffect(() => {
     void refreshStatus();
+    void refreshRuntimeReadiness();
     void api.getSettings().then((loaded) => {
       setSettings(loaded);
       setSavedSettings(loaded);
       setSelectedProjectId(loaded.active_project_id ?? loaded.projects[0]?.id ?? null);
       setLogProjectId(loaded.projects[0]?.id ?? null);
+      if (loaded.projects.length === 0) {
+        const draft = readWizardDraft();
+        setWizardDraft({ ...draft, magicPort: draft.magicPort || loaded.proxy_port || 7877 });
+        setWizardVisible(true);
+      }
     }).catch((cause) => setError(String(cause)));
     const timer = window.setInterval(refreshStatus, 1800);
     return () => window.clearInterval(timer);
-  }, [refreshStatus]);
+  }, [refreshRuntimeReadiness, refreshStatus]);
+
+  useEffect(() => {
+    if (!settings || settings.projects.length > 0 || !wizardVisible) return;
+    window.localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify(wizardDraft));
+  }, [settings, wizardDraft, wizardVisible]);
 
   useEffect(() => {
     if (view !== "logs") return;
@@ -104,6 +161,12 @@ function App() {
   const selectedProject = settings?.projects.find((project) => project.id === selectedProjectId) ?? settings?.projects[0];
   const settingsDirty = settings !== null && savedSettings !== null && (JSON.stringify(settings) !== JSON.stringify(savedSettings) || Object.keys(draftProjectKeys).length > 0);
   const migrationValidation = settings && migrationProjectId ? validateProjectKeyCandidate(migrationProjectId, migrationKey.trim(), settings.projects) : null;
+  const wizardProjectKey = suggestProjectKey(wizardDraft.projectName || "project", []);
+  const wizardProjectPort = settings ? nextProjectPort(settings) : 8000;
+  const wizardDependenciesReady = runtimeReadiness ? runtimeReadiness.mcp_available && runtimeReadiness.proxy_available && runtimeReadiness.tunnel_available : false;
+  const wizardCredentialReady = Boolean(runtimeReadiness?.credential_configured || status.credential_configured || wizardRuntimeKey.trim());
+  const wizardMagicValid = Number.isInteger(wizardDraft.magicPort) && wizardDraft.magicPort > 0 && wizardDraft.magicPort <= 65535;
+  const wizardProjectValid = wizardDraft.projectName.trim().length > 0 && isAbsoluteWindowsPath(wizardDraft.outputDirectory);
 
   async function handlePower(action: "start" | "stop" | "restart") {
     if (busy) return;
@@ -161,6 +224,110 @@ function App() {
     if (!runtimeKey.trim()) return;
     setBusy(true); setError("");
     try { await api.saveRuntimeKey(runtimeKey.trim()); setRuntimeKey(""); setNotice("Runtime API Key 已写入 Windows 安全存储。"); await refreshStatus(); } catch (cause) { setError(String(cause)); } finally { setBusy(false); }
+  }
+
+  function updateWizardDraft(patch: Partial<WizardDraft>) {
+    setWizardDraft((current) => ({ ...current, ...patch }));
+    setWizardError("");
+  }
+
+  function updateWizardSettings(patch: Partial<AppSettings>) {
+    if (!settings) return;
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    void api.checkRuntimeReadiness(next).then(setRuntimeReadiness).catch((cause) => setWizardError(String(cause)));
+  }
+
+  async function chooseWizardDirectory() {
+    const selected = await open({ directory: true, multiple: false, title: "选择首个项目的文档输出目录" });
+    if (typeof selected === "string") updateWizardDraft({ outputDirectory: selected });
+  }
+
+  async function chooseWizardExecutable(kind: "mcp" | "proxy" | "tunnel") {
+    const selected = await open({ directory: false, multiple: false, title: kind === "mcp" ? "选择 chatgpt-delegate Connector" : kind === "proxy" ? "选择 mcp-proxy.exe" : "选择 tunnel-client.exe" });
+    if (typeof selected !== "string") return;
+    updateWizardSettings(kind === "mcp" ? { mcp_executable: selected } : kind === "proxy" ? { proxy_executable: selected } : { tunnel_executable: selected });
+  }
+
+  async function advanceWizard() {
+    if (!settings) return;
+    setWizardError("");
+    if (wizardDraft.step === 0 && !wizardDependenciesReady) {
+      setWizardError("请先在本机准备好 MCP、MCP Proxy 和 Tunnel 程序，并确认路径可用。");
+      return;
+    }
+    if (wizardDraft.step === 1) {
+      if (!wizardCredentialReady) {
+        setWizardError("请输入 Runtime API Key，或先确认已有密钥已安全保存。");
+        return;
+      }
+      if (wizardRuntimeKey.trim()) {
+        try {
+          await api.saveRuntimeKey(wizardRuntimeKey.trim());
+          setWizardRuntimeKey("");
+          await refreshStatus();
+          await refreshRuntimeReadiness();
+        } catch (cause) {
+          setWizardError(String(cause));
+          return;
+        }
+      }
+    }
+    if (wizardDraft.step === 2 && (!wizardDraft.tunnelId.trim() || !wizardMagicValid)) {
+      setWizardError("Tunnel ID 不能为空，Magic 端口必须是 1 到 65535 的整数。");
+      return;
+    }
+    if (wizardDraft.step === 3 && !wizardProjectValid) {
+      setWizardError("请输入项目名称，并选择 Windows 绝对路径作为文档输出目录。");
+      return;
+    }
+    updateWizardDraft({ step: Math.min(4, wizardDraft.step + 1) as WizardStep });
+  }
+
+  function goBackWizard() {
+    updateWizardDraft({ step: Math.max(0, wizardDraft.step - 1) as WizardStep });
+  }
+
+  async function finishWizard() {
+    if (!settings) return;
+    if (!wizardCredentialReady || !wizardDependenciesReady || !wizardMagicValid || !wizardProjectValid || !wizardDraft.tunnelId.trim()) {
+      setWizardError("请完成所有本机配置检查后再完成向导。");
+      return;
+    }
+    setBusy(true); setWizardError(""); setError("");
+    try {
+      const project: ProjectConfig = {
+        id: wizardProjectKey,
+        name: wizardDraft.projectName.trim(),
+        output_directory: wizardDraft.outputDirectory.trim(),
+        mcp_host: "127.0.0.1",
+        mcp_port: wizardProjectPort,
+        enabled: true,
+      };
+      const nextSettings: AppSettings = {
+        ...settings,
+        proxy_host: "127.0.0.1",
+        proxy_port: wizardDraft.magicPort,
+        mcp_proxy_host: "127.0.0.1",
+        health_host: "127.0.0.1",
+        profile_name: wizardDraft.tunnelId.trim(),
+        projects: [project],
+        active_project_id: project.id,
+      };
+      const saved = await api.saveSettings(nextSettings);
+      setSettings(saved);
+      setSavedSettings(saved);
+      setSelectedProjectId(project.id);
+      setLogProjectId(project.id);
+      setWizardVisible(false);
+      window.localStorage.removeItem(WIZARD_DRAFT_KEY);
+      setNotice("本机配置已保存。向导只确认了本地配置，尚未验证端到端连接；现在可以启动项目。");
+      await refreshRuntimeReadiness();
+    } catch (cause) {
+      setWizardError(String(cause));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function updateProject(id: string, patch: Partial<ProjectConfig>) {
@@ -268,6 +435,34 @@ function App() {
 
         {error && <div className="alert-band error-band" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
         {notice && <div className="alert-band success-band"><Check size={18} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭成功提示">×</button></div>}
+        {settings && settings.projects.length === 0 && wizardVisible && <OnboardingWizard
+          draft={wizardDraft}
+          settings={settings}
+          readiness={runtimeReadiness}
+          status={status}
+          runtimeKey={wizardRuntimeKey}
+          error={wizardError}
+          busy={busy}
+          projectKey={wizardProjectKey}
+          projectPort={wizardProjectPort}
+          onDraftChange={updateWizardDraft}
+          onSettingsChange={updateWizardSettings}
+          onRuntimeKeyChange={setWizardRuntimeKey}
+          onNext={() => void advanceWizard()}
+          onBack={goBackWizard}
+          onFinish={() => void finishWizard()}
+          onCancel={() => setWizardVisible(false)}
+          onChooseDirectory={() => void chooseWizardDirectory()}
+          onChooseExecutable={(kind) => void chooseWizardExecutable(kind)}
+        />}
+        {settings && settings.projects.length === 0 && !wizardVisible && <div className="onboarding-resume">
+          <div className="onboarding-resume-card">
+            <div className="wizard-kicker">FIRST RUN SETUP</div>
+            <h1>完成本机配置后再开始连接</h1>
+            <p>当前还没有项目配置。已有配置不会被覆盖，也不会自动生成“默认项目”。</p>
+            <button className="btn btn-primary" onClick={() => setWizardVisible(true)}><RotateCw size={17} />继续配置</button>
+          </div>
+        </div>}
 
         {view === "overview" && <div className="view overview-view prototype-dashboard">
           <section className="conn-summary">
@@ -362,5 +557,92 @@ function ProjectStatusRow({ project, busy, onStart, onStop }: { project: Delegat
 }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function PathRow({ label, value }: { label: string; value: string }) { async function copyValue() { await navigator.clipboard.writeText(value); } return <div className="path-row"><span>{label}</span><code>{value}</code><button onClick={copyValue} title="复制路径" aria-label={`复制${label}路径`}><Copy size={15} /></button></div>; }
+
+function nextProjectPort(settings: AppSettings) {
+  const used = new Set(settings.projects.map((project) => project.mcp_port));
+  let port = 8000;
+  while (used.has(port) || port === settings.mcp_proxy_port || port === settings.router_port || port === settings.health_port) port += 1;
+  return port;
+}
+
+function OnboardingWizard({
+  draft,
+  settings,
+  readiness,
+  status,
+  runtimeKey,
+  error,
+  busy,
+  projectKey,
+  projectPort,
+  onDraftChange,
+  onSettingsChange,
+  onRuntimeKeyChange,
+  onNext,
+  onBack,
+  onFinish,
+  onCancel,
+  onChooseDirectory,
+  onChooseExecutable,
+}: {
+  draft: WizardDraft;
+  settings: AppSettings;
+  readiness: RuntimeReadiness | null;
+  status: DelegateStatus;
+  runtimeKey: string;
+  error: string;
+  busy: boolean;
+  projectKey: string;
+  projectPort: number;
+  onDraftChange: (patch: Partial<WizardDraft>) => void;
+  onSettingsChange: (patch: Partial<AppSettings>) => void;
+  onRuntimeKeyChange: (value: string) => void;
+  onNext: () => void;
+  onBack: () => void;
+  onFinish: () => void;
+  onCancel: () => void;
+  onChooseDirectory: () => void;
+  onChooseExecutable: (kind: "mcp" | "proxy" | "tunnel") => void;
+}) {
+  const steps = [
+    ["01", "运行依赖", "确认本机程序"],
+    ["02", "OpenAI 连接", "安全配置凭据"],
+    ["03", "Magic", "固定本地代理"],
+    ["04", "首个项目", "创建真实项目"],
+    ["05", "完成检查", "确认本地配置"],
+  ];
+  const dependencyItems = [
+    ["MCP Connector", "mcp", settings.mcp_executable, readiness?.mcp_available ?? false, (value: string) => onSettingsChange({ mcp_executable: value })],
+    ["MCP Proxy", "proxy", settings.proxy_executable, readiness?.proxy_available ?? false, (value: string) => onSettingsChange({ proxy_executable: value })],
+    ["Tunnel Client", "tunnel", settings.tunnel_executable, readiness?.tunnel_available ?? false, (value: string) => onSettingsChange({ tunnel_executable: value })],
+  ] as const;
+  const credentialReady = Boolean(readiness?.credential_configured || status.credential_configured || runtimeKey.trim());
+  const depsReady = Boolean(readiness?.mcp_available && readiness.proxy_available && readiness.tunnel_available);
+  const projectValid = draft.projectName.trim().length > 0 && isAbsoluteWindowsPath(draft.outputDirectory);
+
+  return <div className="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+    <div className="wizard-shell">
+      <header className="wizard-header">
+        <div className="wizard-brand"><div className="brand-mark"><Activity size={18} /></div><div><div className="wizard-kicker">DELEGATE CONTROL</div><strong>首次运行配置</strong></div></div>
+        <button className="icon-button" onClick={onCancel} title="稍后配置" aria-label="稍后配置"><span aria-hidden>×</span></button>
+      </header>
+      <div className="wizard-progress" aria-label="配置进度">{steps.map(([number, label, detail], index) => <div className={`wizard-step ${draft.step === index ? "is-current" : ""} ${draft.step > index ? "is-complete" : ""}`} key={number}><span>{draft.step > index ? "✓" : number}</span><div><strong>{label}</strong><small>{detail}</small></div></div>)}</div>
+      <section className="wizard-body">
+        <div className="wizard-copy"><div className="wizard-kicker">STEP {String(draft.step + 1).padStart(2, "0")} / 05</div><h1 id="wizard-title">{steps[draft.step][1]}</h1><p>{draft.step === 0 ? "DCFC 使用你提供的本机程序，不会自动下载或替换运行依赖。" : draft.step === 1 ? "Runtime API Key 只写入当前 Windows 账户的安全存储，向导不会显示或保存密钥内容。" : draft.step === 2 ? "Magic 仅作为本机回环代理使用。这里配置端口和用户可见的 Tunnel ID。" : draft.step === 3 ? "创建第一个真实项目。项目 key 与 MCP 端口由 DCFC 自动生成，后续可在项目管理中查看。" : "最后一步只确认本地配置是否完整，不代表已经完成端到端连接。"}</p></div>
+        {draft.step === 0 && <div className="wizard-panel"><div className="wizard-panel-title"><MonitorCog size={19} /><span>运行依赖就绪</span><span className={`wizard-check ${depsReady ? "ready" : ""}`}>{depsReady ? "已就绪" : "待处理"}</span></div><div className="wizard-dependency-list">{dependencyItems.map(([label, kind, value, ready, onChange]) => <div className="wizard-dependency" key={label}><div className="wizard-dependency-meta"><span>{label}</span><code>{value || "尚未指定"}</code></div><span className={`wizard-check ${ready ? "ready" : ""}`}>{ready ? "可用" : "未找到"}</span><div className="wizard-path-input"><input value={value} onChange={(event) => onChange(event.target.value)} aria-label={`${label}路径`} /><button className="icon-button" onClick={() => onChooseExecutable(kind)} title={`选择${label}`} aria-label={`选择${label}`}><FolderOpen size={16} /></button></div></div>)}</div><p className="wizard-hint">外部 MCP Proxy 与 Tunnel 继续由用户提供。选择文件后会重新检查路径，不会把程序复制到项目目录。</p></div>}
+        {draft.step === 1 && <div className="wizard-panel"><div className="wizard-panel-title"><KeyRound size={19} /><span>OpenAI 连接</span><span className={`wizard-check ${credentialReady ? "ready" : ""}`}>{credentialReady ? "已配置" : "待配置"}</span></div><label className="wizard-field"><span>Runtime API Key</span><input type="password" value={runtimeKey} onChange={(event) => onRuntimeKeyChange(event.target.value)} placeholder={credentialReady ? "已安全保存；如需更换可输入新密钥" : "粘贴 Runtime API Key"} autoComplete="off" /></label><div className="wizard-safe-note"><ShieldCheck size={17} /><span>密钥只发送到 Windows Credential Manager。向导草稿、本地设置和日志中都不会保存密钥。</span></div></div>}
+        {draft.step === 2 && <div className="wizard-panel"><div className="wizard-panel-title"><Network size={19} /><span>Magic 与 Tunnel</span><span className={`wizard-check ${draft.tunnelId.trim() && Number.isInteger(draft.magicPort) && draft.magicPort > 0 && draft.magicPort <= 65535 ? "ready" : ""}`}>{draft.tunnelId.trim() && Number.isInteger(draft.magicPort) && draft.magicPort > 0 && draft.magicPort <= 65535 ? "可继续" : "待填写"}</span></div><div className="wizard-form-grid"><label className="wizard-field"><span>Tunnel ID</span><input value={draft.tunnelId} onChange={(event) => onDraftChange({ tunnelId: event.target.value })} placeholder="例如：my-team-tunnel" /></label><label className="wizard-field"><span>Magic 端口</span><input type="number" min={1} max={65535} value={draft.magicPort} onChange={(event) => onDraftChange({ magicPort: Number(event.target.value) })} /></label></div><div className="wizard-fixed-row"><span>Magic 主机</span><code>127.0.0.1</code><small>固定 loopback，不对外监听</small></div></div>}
+        {draft.step === 3 && <div className="wizard-panel"><div className="wizard-panel-title"><Plus size={19} /><span>创建首个项目</span><span className={`wizard-check ${projectValid ? "ready" : ""}`}>{projectValid ? "可继续" : "待填写"}</span></div><div className="wizard-form-grid"><label className="wizard-field"><span>项目名称</span><input value={draft.projectName} onChange={(event) => onDraftChange({ projectName: event.target.value })} placeholder="例如：我的项目" /></label><label className="wizard-field"><span>自动生成的 Project Key</span><input value={projectKey} readOnly aria-readonly /></label></div><label className="wizard-field"><span>文档输出目录</span><div className="wizard-path-input"><input value={draft.outputDirectory} onChange={(event) => onDraftChange({ outputDirectory: event.target.value })} placeholder="选择 Windows 绝对路径" /><button className="icon-button" onClick={onChooseDirectory} title="选择输出目录" aria-label="选择输出目录"><FolderOpen size={17} /></button></div></label><div className="wizard-summary-line"><span>MCP 端口</span><code>127.0.0.1:{projectPort}</code><span>启用状态</span><b>创建后可启动</b></div></div>}
+        {draft.step === 4 && <div className="wizard-panel"><div className="wizard-panel-title"><Check size={19} /><span>本地配置检查</span><span className="wizard-check ready">本地可保存</span></div><div className="wizard-review-list"><ReviewLine label="运行依赖" value={depsReady ? "MCP / Proxy / Tunnel 路径可用" : "仍有依赖未就绪"} ready={depsReady} /><ReviewLine label="Runtime API Key" value={credentialReady ? "已配置到安全存储" : "尚未配置"} ready={credentialReady} /><ReviewLine label="Magic" value={`127.0.0.1:${draft.magicPort}`} ready={draft.magicPort > 0 && draft.magicPort <= 65535} /><ReviewLine label="Tunnel ID" value={draft.tunnelId || "尚未填写"} ready={Boolean(draft.tunnelId.trim())} /><ReviewLine label="首个项目" value={`${draft.projectName || "尚未填写"} · ${projectKey}`} ready={projectValid} /></div><p className="wizard-hint">完成后会保存一个真实项目配置，不会创建“默认项目”。连接是否能端到端建立，请在返回控制台后手动启动并查看状态。</p></div>}
+        {error && <div className="wizard-error" role="alert"><CircleAlert size={16} />{error}</div>}
+      </section>
+      <footer className="wizard-footer"><button className="secondary-button" onClick={onCancel}>稍后配置</button><div className="wizard-footer-actions">{draft.step > 0 && <button className="secondary-button" onClick={onBack} disabled={busy}>上一步</button>}{draft.step < 4 ? <button className="btn btn-primary" onClick={onNext} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : <ChevronRight size={16} />}下一步</button> : <button className="btn btn-primary" onClick={onFinish} disabled={busy}><Save size={16} />保存本地配置</button>}</div></footer>
+    </div>
+  </div>;
+}
+
+function ReviewLine({ label, value, ready }: { label: string; value: string; ready: boolean }) {
+  return <div className="wizard-review-line"><span>{label}</span><code>{value}</code><span className={`wizard-review-status ${ready ? "ready" : ""}`}>{ready ? "通过" : "待处理"}</span></div>;
+}
 
 export default App;

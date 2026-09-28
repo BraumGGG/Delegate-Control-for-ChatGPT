@@ -69,6 +69,8 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::get_runtime_readiness,
+            commands::check_runtime_readiness,
             commands::start_delegate,
             commands::stop_delegate,
             commands::start_all_projects,

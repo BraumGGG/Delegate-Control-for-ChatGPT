@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, DelegateStatus, LogSource } from "./types";
+import type { AppSettings, DelegateStatus, LogSource, RuntimeReadiness } from "./types";
 
 export const api = {
   getStatus: () => invoke<DelegateStatus>("get_status"),
+  getRuntimeReadiness: () => invoke<RuntimeReadiness>("get_runtime_readiness"),
+  checkRuntimeReadiness: (settings: AppSettings) => invoke<RuntimeReadiness>("check_runtime_readiness", { settings }),
   start: () => invoke<DelegateStatus>("start_delegate"),
   stop: () => invoke<DelegateStatus>("stop_delegate"),
   startAllProjects: () => invoke<DelegateStatus>("start_all_projects"),
