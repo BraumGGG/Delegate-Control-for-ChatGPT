@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -47,13 +47,11 @@ fn default_router_port() -> u16 { 8101 }
 fn default_health_port() -> u16 { 8080 }
 
 fn default_proxy_config_path() -> String {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join("Delegate Control").join("mcp-proxy.toml").to_string_lossy().to_string()
+    app_data_root().join("mcp-proxy.toml").to_string_lossy().to_string()
 }
 
 fn default_router_config_path() -> String {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join("Delegate Control").join("router-projects.json").to_string_lossy().to_string()
+    app_data_root().join("router-projects.json").to_string_lossy().to_string()
 }
 
 fn empty_settings() -> AppSettings {
@@ -237,33 +235,126 @@ fn normalized_path(path: &str) -> String {
     path.trim().trim_end_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase()
 }
 
+#[cfg(test)]
 pub fn load_settings(path: &Path) -> AppSettings {
-    match fs::read_to_string(path) {
-        Ok(content) => match serde_json::from_str::<Value>(&content) {
-            Ok(value) => load_settings_from_value(value),
-            Err(_) => load_settings_backup(path).unwrap_or_else(empty_settings),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppSettings::default(),
-        Err(_) => load_settings_backup(path).unwrap_or_else(empty_settings),
-    }
+    load_settings_from_sources(path, &[])
 }
 
-fn load_settings_backup(path: &Path) -> Option<AppSettings> {
-    let parent = path.parent()?;
-    let stem = path.file_name()?.to_string_lossy();
-    let mut candidates = fs::read_dir(parent).ok()?.filter_map(Result::ok)
+pub fn load_application_settings(path: &Path) -> AppSettings {
+    let sources = legacy_settings_paths();
+    let mut settings = load_settings_from_sources(path, &sources);
+    let stable_root = path.parent().unwrap_or_else(|| Path::new("."));
+    let stable_proxy = stable_root.join("mcp-proxy.toml").to_string_lossy().to_string();
+    let stable_router = stable_root.join("router-projects.json").to_string_lossy().to_string();
+    let mut changed = false;
+    if is_legacy_runtime_path(&settings.proxy_config_path, "mcp-proxy.toml") && settings.proxy_config_path != stable_proxy {
+        settings.proxy_config_path = stable_proxy;
+        changed = true;
+    }
+    if is_legacy_runtime_path(&settings.router_config_path, "router-projects.json") && settings.router_config_path != stable_router {
+        settings.router_config_path = stable_router;
+        changed = true;
+    }
+    if changed && !settings.projects.is_empty() {
+        let _ = save_settings(path, &settings);
+    }
+    settings
+}
+
+fn load_settings_from_sources(path: &Path, additional_sources: &[PathBuf]) -> AppSettings {
+    let current = read_candidate(path, None);
+    let mut candidates = Vec::new();
+    if let Some(candidate) = current.clone() {
+        candidates.push(candidate);
+    }
+    candidates.extend(backup_paths(path).into_iter().filter_map(|candidate_path| read_candidate(&candidate_path, None)));
+    for source in additional_sources {
+        if same_path(source, path) { continue; }
+        if let Some(candidate) = read_candidate(source, None) {
+            candidates.push(candidate);
+        }
+        candidates.extend(backup_paths(source).into_iter().filter_map(|candidate_path| read_candidate(&candidate_path, None)));
+    }
+
+    if candidates.is_empty() {
+        return empty_settings();
+    }
+
+    candidates.sort_by(|left, right| {
+        right.project_count.cmp(&left.project_count)
+            .then_with(|| right.modified.cmp(&left.modified))
+            .then_with(|| right.modern.cmp(&left.modern))
+    });
+    let selected = candidates.into_iter().next().expect("candidate list is not empty");
+    let selected_is_current = current.as_ref().is_some_and(|candidate| candidate.path == selected.path);
+    if !selected_is_current {
+        if path.exists() {
+            let _ = preserve_recovery_copy(path);
+        }
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::copy(&selected.path, path);
+    }
+    selected.settings
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy().replace('/', "\\").eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"))
+}
+
+fn is_legacy_runtime_path(path: &str, file_name: &str) -> bool {
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    normalized.ends_with(&format!("\\delegate control\\{}", file_name.to_ascii_lowercase()))
+}
+
+#[derive(Debug, Clone)]
+struct SettingsCandidate {
+    path: PathBuf,
+    settings: AppSettings,
+    project_count: usize,
+    modified: SystemTime,
+    modern: bool,
+}
+
+fn backup_paths(path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = path.parent() else { return Vec::new(); };
+    let Some(file_name) = path.file_name() else { return Vec::new(); };
+    let stem = file_name.to_string_lossy();
+    let mut candidates = fs::read_dir(parent).ok().into_iter().flatten().filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(&format!("{stem}.backup-")))
-        .filter_map(|entry| entry.metadata().ok().map(|metadata| (metadata.modified().ok(), entry.path())))
+        .map(|entry| entry.path())
         .collect::<Vec<_>>();
-    candidates.sort_by_key(|(modified, _)| *modified);
-    candidates.into_iter().rev().find_map(|(_, candidate)| {
-        let content = fs::read_to_string(candidate).ok()?;
-        let value = serde_json::from_str::<Value>(&content).ok()?;
-        let projects = value.get("projects")?.as_array()?;
-        if projects.is_empty() { return None; }
-        let settings = load_settings_from_value(value);
-        settings.validate().ok().map(|_| settings)
-    })
+    candidates.sort();
+    candidates
+}
+
+fn read_candidate(path: &Path, modified: Option<SystemTime>) -> Option<SettingsCandidate> {
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&content).ok()?;
+    let modern = value.get("projects").is_some();
+    let settings = load_settings_from_value(value.clone());
+    if settings.projects.is_empty() || settings.validate().is_err() {
+        return None;
+    }
+    if modern && is_injected_default_payload(&value, &settings) {
+        return None;
+    }
+    let modified = modified.or_else(|| fs::metadata(path).ok()?.modified().ok()).unwrap_or(UNIX_EPOCH);
+    Some(SettingsCandidate { path: path.to_path_buf(), project_count: settings.projects.len(), settings, modified, modern })
+}
+
+fn is_injected_default_payload(value: &Value, settings: &AppSettings) -> bool {
+    value.get("projects").and_then(Value::as_array).is_some()
+        && settings.projects.iter().any(|project| project.id == "default" && project.name == "默认项目")
+}
+
+fn preserve_recovery_copy(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let file_name = path.file_name()?.to_string_lossy();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let target = parent.join(format!("{file_name}.recovery-{stamp}"));
+    fs::copy(path, &target).ok().map(|_| target)
 }
 
 pub fn load_settings_from_value(value: Value) -> AppSettings {
@@ -335,12 +426,44 @@ pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<(), String> 
         fs::create_dir_all(parent).map_err(|error| format!("无法创建设置目录：{error}"))?;
     }
     let json = serde_json::to_string_pretty(settings).map_err(|error| format!("无法序列化设置：{error}"))?;
+    if path.exists() {
+        preserve_settings_backup(path)?;
+    }
     fs::write(path, json).map_err(|error| format!("无法保存设置：{error}"))
 }
 
+fn preserve_settings_backup(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or_else(|| "设置文件缺少父目录。".to_string())?;
+    let file_name = path.file_name().ok_or_else(|| "设置文件缺少文件名。".to_string())?.to_string_lossy();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| format!("无法生成设置备份时间戳：{error}"))?.as_millis();
+    let target = parent.join(format!("{file_name}.backup-{stamp}"));
+    fs::copy(path, &target).map_err(|error| format!("无法备份现有设置：{error}"))?;
+    Ok(target)
+}
+
 pub fn app_data_root() -> PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join("Delegate Control")
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".delegate-control")
+}
+
+fn legacy_settings_paths() -> Vec<PathBuf> {
+    let home = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()));
+    let mut paths = vec![home.join("AppData").join("Roaming").join("Delegate Control").join("settings.json")];
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        paths.push(PathBuf::from(appdata).join("Delegate Control").join("settings.json"));
+    }
+    let packages = home.join("AppData").join("Local").join("Packages");
+    if let Ok(entries) = fs::read_dir(packages) {
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.starts_with("openai.codex_") {
+                paths.push(entry.path().join("LocalCache").join("Roaming").join("Delegate Control").join("settings.json"));
+            }
+        }
+    }
+    paths.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    paths.dedup_by(|left, right| same_path(left, right));
+    paths
 }
 
 #[cfg(test)]
@@ -436,5 +559,167 @@ mod tests {
         let settings = load_settings_from_value(serde_json::json!({"projects": "not-an-array"}));
         assert!(settings.projects.is_empty());
         assert_eq!(settings.active_project_id, None);
+    }
+
+    fn settings_with_projects(count: usize, prefix: &Path) -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.projects = (0..count).map(|index| ProjectConfig {
+            id: format!("project-{index}"),
+            name: format!("Project {index}"),
+            output_directory: prefix.join(format!("project-{index}")).to_string_lossy().to_string(),
+            mcp_host: "127.0.0.1".to_string(),
+            mcp_port: 8000 + index as u16,
+            enabled: true,
+        }).collect();
+        settings.active_project_id = settings.projects.last().map(|project| project.id.clone());
+        settings
+    }
+
+    #[test]
+    fn load_settings_prefers_largest_valid_backup_and_preserves_current_file() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-recovery-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+
+        let mut current = settings_with_projects(2, &root.join("current"));
+        current.projects[1].id = "default".to_string();
+        current.projects[1].name = "默认项目".to_string();
+        current.active_project_id = Some("default".to_string());
+        fs::write(&path, serde_json::to_string_pretty(&current).unwrap()).unwrap();
+
+        let backup = settings_with_projects(5, &root.join("backup"));
+        let backup_path = root.join("settings.json.backup-20260928-largest");
+        fs::write(&backup_path, serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.projects.len(), 5);
+        assert_eq!(loaded.active_project_id.as_deref(), Some("project-4"));
+        assert!(root.join("settings.json.recovery-0").exists() || fs::read_dir(&root).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("settings.json.recovery-")));
+        let persisted: AppSettings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.projects.len(), 5);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_settings_keeps_current_valid_configuration_even_when_backup_is_smaller() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-current-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        let current = settings_with_projects(6, &root.join("current"));
+        fs::write(&path, serde_json::to_string_pretty(&current).unwrap()).unwrap();
+        let backup = settings_with_projects(3, &root.join("backup"));
+        fs::write(root.join("settings.json.backup-small"), serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.projects.len(), 6);
+        assert_eq!(loaded.active_project_id.as_deref(), Some("project-5"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), serde_json::to_string_pretty(&current).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_settings_does_not_restore_injected_default_without_a_valid_backup() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-default-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        let payload = serde_json::json!({
+            "proxy_host": "127.0.0.1",
+            "proxy_port": 7897,
+            "projects": [{
+                "id": "default",
+                "name": "默认项目",
+                "output_directory": root.join("default").to_string_lossy(),
+                "mcp_host": "127.0.0.1",
+                "mcp_port": 8000,
+                "enabled": true
+            }],
+            "active_project_id": "default"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&payload).unwrap()).unwrap();
+        let loaded = load_settings(&path);
+        assert!(loaded.projects.is_empty());
+        assert_eq!(loaded.active_project_id, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_settings_rejects_injected_default_mixed_with_real_projects() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-mixed-default-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        let mut current = settings_with_projects(2, &root.join("current"));
+        current.projects[1].id = "default".to_string();
+        current.projects[1].name = "默认项目".to_string();
+        current.active_project_id = Some("default".to_string());
+        fs::write(&path, serde_json::to_string_pretty(&current).unwrap()).unwrap();
+
+        let loaded = load_settings(&path);
+        assert!(loaded.projects.is_empty());
+        assert_eq!(loaded.active_project_id, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_settings_file_does_not_inject_default_project() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let loaded = load_settings(&root.join("settings.json"));
+        assert!(loaded.projects.is_empty());
+        assert_eq!(loaded.active_project_id, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_migration_selects_arbitrary_largest_collection_into_stable_root() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-source-migration-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let stable = root.join("stable").join("settings.json");
+        let source_a = root.join("roaming").join("settings.json");
+        let source_b = root.join("package-cache").join("settings.json");
+        fs::create_dir_all(source_a.parent().unwrap()).unwrap();
+        fs::create_dir_all(source_b.parent().unwrap()).unwrap();
+        fs::write(&source_a, serde_json::to_string_pretty(&settings_with_projects(4, &root.join("a"))).unwrap()).unwrap();
+        fs::write(&source_b, serde_json::to_string_pretty(&settings_with_projects(8, &root.join("b"))).unwrap()).unwrap();
+
+        let loaded = load_settings_from_sources(&stable, &[source_a, source_b]);
+        assert_eq!(loaded.projects.len(), 8);
+        assert_eq!(loaded.active_project_id.as_deref(), Some("project-7"));
+        let persisted: AppSettings = serde_json::from_str(&fs::read_to_string(&stable).unwrap()).unwrap();
+        assert_eq!(persisted.projects.len(), 8);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_settings_preserves_previous_arbitrary_project_collection() {
+        let root = std::env::temp_dir().join(format!("dcfc-settings-save-backup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        let original = settings_with_projects(7, &root.join("original"));
+        fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+        let updated = settings_with_projects(9, &root.join("updated"));
+        save_settings(&path, &updated).unwrap();
+
+        let backup = fs::read_dir(&root).unwrap().filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("settings.json.backup-"))
+            .expect("save should preserve the previous settings file");
+        let preserved: AppSettings = serde_json::from_str(&fs::read_to_string(backup.path()).unwrap()).unwrap();
+        assert_eq!(preserved.projects.len(), 7);
+        let current: AppSettings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(current.projects.len(), 9);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stable_root_is_outside_virtualized_appdata() {
+        let root = app_data_root().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        assert!(root.ends_with("\\.delegate-control"));
+        assert!(!root.contains("\\appdata\\"));
     }
 }

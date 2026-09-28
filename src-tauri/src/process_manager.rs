@@ -64,7 +64,7 @@ impl ProcessManager {
     pub fn status(&mut self, settings: &AppSettings) -> DelegateStatus {
         self.refresh_process_state();
         self.refresh_connector_capability(&settings.mcp_executable);
-        let proxy_ready = tcp_ready(&settings.proxy_host, settings.proxy_port, 350);
+        let proxy_ready = detect_clash_port(settings).is_ok();
         let router_ready = self.router.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.router_port, 350);
         let mcp_proxy_ready = self.proxy.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 350);
         let tunnel_ready = self.tunnel.is_some() && http_ready(&settings.health_host, settings.health_port, 500);
@@ -293,8 +293,10 @@ impl ProcessManager {
         if tcp_ready(&project.mcp_host, project.mcp_port, 250) { return Err(format!("项目“{}”的 MCP 端口 {} 已被其他程序占用。", project.name, project.mcp_port)); }
         let project_log_dir = self.log_dir.join(&project.id);
         fs::create_dir_all(&project_log_dir).map_err(|error| format!("无法创建项目日志目录：{error}"))?;
+        let stderr_path = project_log_dir.join("mcp.stderr.log");
+        let stderr_offset = log_offset(&stderr_path);
         let stdout = log_file(&project_log_dir.join("mcp.stdout.log"))?;
-        let stderr = log_file(&project_log_dir.join("mcp.stderr.log"))?;
+        let stderr = log_file(&stderr_path)?;
         let mut command = Command::new(&settings.mcp_executable);
         command.args(["--output-dir", &project.output_directory, "serve", "--host", &project.mcp_host, "--port", &project.mcp_port.to_string()]).stdin(Stdio::null()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut child = command.spawn().map_err(|error| format!("无法启动项目“{}”的 MCP：{error}", project.name))?;
@@ -302,10 +304,10 @@ impl ProcessManager {
             terminate_child(&mut child);
             return Err(error);
         }
-        let wait_result = wait_for_tcp(&project.mcp_host, project.mcp_port, Duration::from_secs(15), &mut child);
+        let wait_result = wait_for_log_marker(&stderr_path, stderr_offset, b"Application startup complete.", Duration::from_secs(15), &mut child);
         if !matches!(wait_result, WaitResult::Ready) {
             terminate_child(&mut child);
-            let reason = match wait_result { WaitResult::Exited => "MCP 进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() };
+            let reason = match wait_result { WaitResult::Exited => "MCP 进程已退出", WaitResult::TimedOut => "15 秒内未出现 MCP 启动完成标记", WaitResult::Ready => unreachable!() };
             return Err(format!("项目“{}”的 MCP 未能就绪：{}。请查看项目日志。当前 MCP 程序：{}", project.name, reason, settings.mcp_executable));
         }
         self.project_failures.remove(&project.id);
@@ -314,9 +316,7 @@ impl ProcessManager {
     }
 
     fn start_shared(&mut self, settings: &AppSettings, key: &str) -> Result<(), String> {
-        if !tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
-            return Err(format!("Clash 代理未就绪：{}:{}。请先启动 Clash 后重试。", settings.proxy_host, settings.proxy_port));
-        }
+        let clash_port = detect_clash_port(settings)?;
         if tcp_ready(&settings.mcp_proxy_host, settings.router_port, 250) { return Err(format!("Router 端口 {} 已被其他程序占用。", settings.router_port)); }
         if tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 250) { return Err(format!("MCP Proxy 端口 {} 已被其他程序占用。", settings.mcp_proxy_port)); }
         if tcp_ready(&settings.health_host, settings.health_port, 250) { return Err(format!("健康端口 {} 已被其他程序占用。", settings.health_port)); }
@@ -325,8 +325,10 @@ impl ProcessManager {
         let toml = build_proxy_toml(settings, &projects)?;
         write_proxy_config(Path::new(&settings.proxy_config_path), &toml)?;
         fs::create_dir_all(&self.log_dir).map_err(|error| format!("无法创建日志目录：{error}"))?;
+        let router_stderr_path = self.log_dir.join("router.stderr.log");
+        let router_stderr_offset = log_offset(&router_stderr_path);
         let router_stdout = log_file(&self.log_dir.join("router.stdout.log"))?;
-        let router_stderr = log_file(&self.log_dir.join("router.stderr.log"))?;
+        let router_stderr = log_file(&router_stderr_path)?;
         let mut router_command = Command::new(&settings.mcp_executable);
         router_command.args(["router", "--config", &settings.router_config_path, "--host", &settings.mcp_proxy_host, "--port", &settings.router_port.to_string()]).stdin(Stdio::null()).stdout(Stdio::from(router_stdout)).stderr(Stdio::from(router_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut router = router_command.spawn().map_err(|error| format!("无法启动 Router MCP：{error}"))?;
@@ -334,15 +336,17 @@ impl ProcessManager {
             terminate_child(&mut router);
             return Err(error);
         }
-        let wait_result = wait_for_tcp(&settings.mcp_proxy_host, settings.router_port, Duration::from_secs(15), &mut router);
+        let wait_result = wait_for_log_marker(&router_stderr_path, router_stderr_offset, b"Application startup complete.", Duration::from_secs(15), &mut router);
         if !matches!(wait_result, WaitResult::Ready) {
             terminate_child(&mut router);
-            let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() };
+            let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未出现 Router 启动完成标记", WaitResult::Ready => unreachable!() };
             return Err(format!("Router MCP 未能就绪：{}。请查看 Router 日志。当前程序：{}", reason, settings.mcp_executable));
         }
         self.router = Some(router);
+        let proxy_stderr_path = self.log_dir.join("proxy.stderr.log");
+        let proxy_stderr_offset = log_offset(&proxy_stderr_path);
         let proxy_stdout = log_file(&self.log_dir.join("proxy.stdout.log"))?;
-        let proxy_stderr = log_file(&self.log_dir.join("proxy.stderr.log"))?;
+        let proxy_stderr = log_file(&proxy_stderr_path)?;
         let mut proxy_command = Command::new(&settings.proxy_executable);
         proxy_command.args(["--config", &settings.proxy_config_path]).stdin(Stdio::null()).stdout(Stdio::from(proxy_stdout)).stderr(Stdio::from(proxy_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut proxy = proxy_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 MCP Proxy：{error}") })?;
@@ -351,11 +355,11 @@ impl ProcessManager {
             self.stop_shared();
             return Err(error);
         }
-        let wait_result = wait_for_tcp(&settings.mcp_proxy_host, settings.mcp_proxy_port, Duration::from_secs(15), &mut proxy);
+        let wait_result = wait_for_log_marker(&proxy_stderr_path, proxy_stderr_offset, b"Proxy ready listen=", Duration::from_secs(15), &mut proxy);
         if !matches!(wait_result, WaitResult::Ready) {
             terminate_child(&mut proxy);
             self.stop_shared();
-            let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未监听端口", WaitResult::Ready => unreachable!() };
+            let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未出现 Proxy 就绪标记", WaitResult::Ready => unreachable!() };
             return Err(format!("MCP Proxy 未能就绪：{}。请查看 proxy 日志。当前程序：{}", reason, settings.proxy_executable));
         }
         self.proxy = Some(proxy);
@@ -367,7 +371,7 @@ impl ProcessManager {
         // mcp-proxy exposes its Streamable HTTP router at the root path. The
         // project backends behind it still use /mcp, but the shared Tunnel
         // must target the proxy root so initialize requests are not 404.
-        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, settings.proxy_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
+        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut tunnel = tunnel_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 Tunnel：{error}") })?;
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &tunnel) {
             terminate_child(&mut tunnel);
@@ -436,6 +440,29 @@ fn assign_to_job(job: HANDLE, child: &Child) -> Result<(), String> { if unsafe {
 fn terminate_child(child: &mut Child) { let _ = child.kill(); let _ = child.wait(); }
 fn require_file(path: &str, label: &str) -> Result<(), String> { if Path::new(path).is_file() { Ok(()) } else { Err(format!("找不到{label}：{path}")) } }
 fn log_file(path: &Path) -> Result<File, String> { if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| format!("无法创建日志目录：{error}"))?; } OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("无法打开日志 {}：{error}", path.display())) }
+fn log_offset(path: &Path) -> u64 { fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0) }
+fn log_contains_marker(path: &Path, offset: u64, marker: &[u8]) -> bool {
+    if marker.is_empty() { return false; }
+    let Ok(bytes) = fs::read(path) else { return false; };
+    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(bytes.len());
+    bytes[start..].windows(marker.len()).any(|window| window == marker)
+}
+fn detect_clash_port(settings: &AppSettings) -> Result<u16, String> {
+    let compatible_port = if settings.proxy_port == 7897 { 7877 } else { 7897 };
+    detect_clash_port_with_legacy(settings, compatible_port)
+}
+fn detect_clash_port_with_legacy(settings: &AppSettings, legacy_port: u16) -> Result<u16, String> {
+    if tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
+        return Ok(settings.proxy_port);
+    }
+    if settings.proxy_port != legacy_port && tcp_ready(&settings.proxy_host, legacy_port, 700) {
+        return Ok(legacy_port);
+    }
+    if settings.proxy_port != legacy_port {
+        return Err(format!("Clash 代理未就绪：已检查 {}:{} 和兼容旧端口 {}:{}。请先启动 Clash 或在连接设置中确认端口。", settings.proxy_host, settings.proxy_port, settings.proxy_host, legacy_port));
+    }
+    Err(format!("Clash 代理未就绪：{}:{}。请先启动 Clash 后重试。", settings.proxy_host, settings.proxy_port))
+}
 fn tcp_ready(host: &str, port: u16, timeout_ms: u64) -> bool { let address = format!("{host}:{port}"); address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()).is_some_and(|socket| TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).is_ok()) }
 fn http_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
     http_probe(host, port, "/readyz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
@@ -478,11 +505,11 @@ fn parse_http_status(response: &[u8]) -> Option<u16> {
 }
 enum WaitResult { Ready, Exited, TimedOut }
 
-fn wait_for_tcp(host: &str, port: u16, timeout: Duration, child: &mut Child) -> WaitResult {
+fn wait_for_log_marker(path: &Path, offset: u64, marker: &[u8], timeout: Duration, child: &mut Child) -> WaitResult {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() { return WaitResult::Exited; }
-        if tcp_ready(host, port, 300) { return WaitResult::Ready; }
+        if log_contains_marker(path, offset, marker) { return WaitResult::Ready; }
         thread::sleep(Duration::from_millis(250));
     }
     WaitResult::TimedOut
@@ -532,6 +559,20 @@ mod tests {
         assert_eq!(parse_http_status(b"HTTP/1.1 201 OK\r\n\r\n"), Some(201));
         assert_eq!(parse_http_status(b"HTTP/1.1 503 Service Unavailable\r\n\r\n"), Some(503));
         assert_eq!(parse_http_status(b"HTTP/1.1 OK\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn readiness_marker_only_matches_content_written_after_launch_offset() {
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("dcfc-readiness-{suffix}.log"));
+        fs::write(&path, b"Application startup complete.\n").unwrap();
+        let offset = log_offset(&path);
+
+        assert!(!log_contains_marker(&path, offset, b"Application startup complete."));
+        OpenOptions::new().append(true).open(&path).unwrap().write_all(b"Application startup complete.\n").unwrap();
+        assert!(log_contains_marker(&path, offset, b"Application startup complete."));
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -622,20 +663,58 @@ mod tests {
         assert!(manager.tunnel.is_none());
     }
 
+    #[test]
+    fn clash_preflight_uses_legacy_listener_when_configured_port_is_stale() {
+        let configured = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let configured_port = configured.local_addr().unwrap().port();
+        drop(configured);
+        let legacy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let legacy_port = legacy.local_addr().unwrap().port();
+        let mut settings = AppSettings::default();
+        settings.proxy_port = configured_port;
+        assert_eq!(detect_clash_port_with_legacy(&settings, legacy_port).unwrap(), legacy_port);
+    }
+
+    #[test]
+    fn clash_preflight_migrates_from_legacy_7897_to_current_7877_listener() {
+        let current = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let current_port = current.local_addr().unwrap().port();
+        let mut settings = AppSettings::default();
+        settings.proxy_port = 7897;
+        assert_eq!(detect_clash_port_with_legacy(&settings, current_port).unwrap(), current_port);
+    }
+
+    #[test]
+    fn clash_preflight_error_names_configured_and_legacy_ports() {
+        let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let configured_port = first.local_addr().unwrap().port();
+        drop(first);
+        let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let legacy_port = second.local_addr().unwrap().port();
+        drop(second);
+        let mut settings = AppSettings::default();
+        settings.proxy_port = configured_port;
+        let error = detect_clash_port_with_legacy(&settings, legacy_port).unwrap_err();
+        assert!(error.contains(&configured_port.to_string()));
+        assert!(error.contains(&legacy_port.to_string()));
+    }
+
     fn connector_call(python: &str, project_id: &str) {
         let code = r#"
 import asyncio
 import sys
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 async def main():
-    async with streamable_http_client('http://127.0.0.1:8100') as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool('connector_status', {'project_id': sys.argv[1]})
-            if result.isError or result.structuredContent.get('status') != 'ready':
-                raise RuntimeError(result)
+    async with httpx.AsyncClient(trust_env=False) as client:
+        async with streamable_http_client('http://127.0.0.1:8100', http_client=client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool('connector_status', {'project_id': sys.argv[1]})
+                if result.isError or result.structuredContent.get('status') != 'ready':
+                    raise RuntimeError(result)
 
 asyncio.run(main())
 "#;
@@ -646,27 +725,29 @@ asyncio.run(main())
     fn connector_sha_append(python: &str) {
         let code = r#"
 import asyncio
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 async def main():
-    async with streamable_http_client('http://127.0.0.1:8100') as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            before = await session.call_tool('read_text_file', {
-                'filename': 'PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md',
-                'project_id': 'dcfc',
-            })
-            if before.isError:
-                raise RuntimeError(before)
-            result = await session.call_tool('append_text_file', {
-                'filename': 'PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md',
-                'content': '<!-- PDH-20260927-009 real Connector SHA-256 append verification passed. -->',
-                'expected_sha256': before.structuredContent['sha256'],
-                'project_id': 'dcfc',
-            })
-            if result.isError or result.structuredContent.get('operation') != 'append':
-                raise RuntimeError(result)
+    async with httpx.AsyncClient(trust_env=False) as client:
+        async with streamable_http_client('http://127.0.0.1:8100', http_client=client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                before = await session.call_tool('read_text_file', {
+                    'filename': 'PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md',
+                    'project_id': 'dcfc',
+                })
+                if before.isError:
+                    raise RuntimeError(before)
+                result = await session.call_tool('append_text_file', {
+                    'filename': 'PRODUCT_DESIGNER_DEVELOPER_HANDOFF.md',
+                    'content': '<!-- PDH-20260927-009 real Connector SHA-256 append verification passed. -->',
+                    'expected_sha256': before.structuredContent['sha256'],
+                    'project_id': 'dcfc',
+                })
+                if result.isError or result.structuredContent.get('operation') != 'append':
+                    raise RuntimeError(result)
 
 asyncio.run(main())
 "#;
@@ -679,8 +760,8 @@ asyncio.run(main())
     fn live_multi_project_lifecycle_matrix() {
         let settings_path = PathBuf::from(std::env::var("DCFC_SETTINGS_PATH").expect("DCFC_SETTINGS_PATH is required"));
         let python = std::env::var("DCFC_MCP_CLIENT_PYTHON").expect("DCFC_MCP_CLIENT_PYTHON is required");
-        let settings_before = fs::read(&settings_path).expect("settings should be readable");
-        let settings = crate::config::load_settings(&settings_path);
+        let settings = crate::config::load_application_settings(&settings_path);
+        let settings_before = fs::read(&settings_path).expect("migrated settings should be readable");
         let identities = settings.projects.iter().map(|project| (project.name.as_str(), project.id.as_str())).collect::<Vec<_>>();
         assert_eq!(identities, vec![("ScreenCast", "screencast"), ("Realize", "realize"), ("DCFC", "dcfc")]);
         assert_eq!(settings.active_project_id.as_deref(), Some("dcfc"));

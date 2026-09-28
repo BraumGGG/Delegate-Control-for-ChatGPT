@@ -4,7 +4,7 @@ mod credentials;
 mod process_manager;
 mod proxy_config;
 
-use config::{app_data_root, load_settings, AppSettings};
+use config::{app_data_root, load_application_settings, AppSettings};
 use process_manager::{DelegateStatus, ProcessManager};
 use std::{path::PathBuf, sync::{Arc, Mutex}};
 use tauri::Manager;
@@ -22,7 +22,7 @@ impl AppState {
     fn new() -> Self {
         let root = app_data_root();
         let settings_path = root.join("settings.json");
-        let settings = load_settings(&settings_path);
+        let settings = load_application_settings(&settings_path);
         Self {
             manager: Arc::new(Mutex::new(ProcessManager::new(root.join("logs")))),
             settings: Arc::new(Mutex::new(settings)),
