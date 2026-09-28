@@ -355,7 +355,9 @@ impl ProcessManager {
             self.stop_shared();
             return Err(error);
         }
-        let wait_result = wait_for_log_marker(&proxy_stderr_path, proxy_stderr_offset, b"Proxy ready listen=", Duration::from_secs(15), &mut proxy);
+        // mcp-proxy styles the `listen=` field with ANSI escapes when launched
+        // from the desktop app, so only match the stable unstyled prefix.
+        let wait_result = wait_for_log_marker(&proxy_stderr_path, proxy_stderr_offset, b"Proxy ready ", Duration::from_secs(15), &mut proxy);
         if !matches!(wait_result, WaitResult::Ready) {
             terminate_child(&mut proxy);
             self.stop_shared();
@@ -576,6 +578,18 @@ mod tests {
     }
 
     #[test]
+    fn proxy_readiness_marker_accepts_ansi_styled_fields() {
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("dcfc-proxy-readiness-{suffix}.log"));
+        fs::write(&path, b"Proxy ready \x1b[3mlisten\x1b[0m\x1b[2m=\x1b[0m127.0.0.1:8100\n").unwrap();
+
+        assert!(log_contains_marker(&path, 0, b"Proxy ready "));
+        assert!(!log_contains_marker(&path, 0, b"Proxy ready listen="));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn parses_connector_text_editing_capability_without_exposing_payload() {
         assert_eq!(parse_text_editing_capability(br#"{"text_editing":true}"#), Some(true));
         assert_eq!(parse_text_editing_capability(br#"{"text_editing":false}"#), Some(false));
@@ -787,6 +801,12 @@ asyncio.run(main())
 
         let stopped_all = manager.stop_all(&settings);
         assert_eq!(stopped_all.overall, OverallState::Stopped);
+
+        let started_one = manager.start_project(&settings, "dcfc").expect("Start One from fully stopped state should succeed");
+        assert_eq!(started_one.overall, OverallState::Running);
+        connector_call(&python, "dcfc");
+        manager.stop_all(&settings);
+
         let restarted_all = manager.start_all(&settings).expect("second Start All should succeed");
         assert_eq!(restarted_all.overall, OverallState::Running);
         connector_call(&python, "dcfc");
