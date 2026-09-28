@@ -91,6 +91,8 @@ npm run tauri -- dev
 npm run tauri -- build
 ```
 
+发布版必须使用 `npm run tauri -- build`，该命令会先构建前端并把 `dist` 资源嵌入 Tauri 安装程序。不要用裸 `cargo build --release` 直接替换安装版，否则会保留开发模式的 `http://localhost:1420` 地址。
+
 安装包输出在：
 
 ```text
