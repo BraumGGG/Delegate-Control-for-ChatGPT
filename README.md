@@ -67,7 +67,7 @@ delete_text_from_file
 - `mcp-proxy.exe`（外部依赖，DCFC 不打包、不提交二进制）
 - `chatgpt-delegate-edit.exe`（编辑版 Connector，可由项目脚本构建）
 - `tunnel-client.exe`
-- 本地 Clash HTTP 代理，默认 `127.0.0.1:7897`
+- 本地 Magic HTTP 代理，默认 `127.0.0.1:7877`，端口可在连接设置中显式保存
 
 默认程序路径：
 

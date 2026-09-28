@@ -64,7 +64,7 @@ impl ProcessManager {
     pub fn status(&mut self, settings: &AppSettings) -> DelegateStatus {
         self.refresh_process_state();
         self.refresh_connector_capability(&settings.mcp_executable);
-        let proxy_ready = detect_clash_port(settings).is_ok();
+        let proxy_ready = detect_magic_port(settings).is_ok();
         let router_ready = self.router.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.router_port, 350);
         let mcp_proxy_ready = self.proxy.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 350);
         let tunnel_ready = self.tunnel.is_some() && http_ready(&settings.health_host, settings.health_port, 500);
@@ -316,7 +316,7 @@ impl ProcessManager {
     }
 
     fn start_shared(&mut self, settings: &AppSettings, key: &str) -> Result<(), String> {
-        let clash_port = detect_clash_port(settings)?;
+        let magic_port = detect_magic_port(settings)?;
         if tcp_ready(&settings.mcp_proxy_host, settings.router_port, 250) { return Err(format!("Router 端口 {} 已被其他程序占用。", settings.router_port)); }
         if tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 250) { return Err(format!("MCP Proxy 端口 {} 已被其他程序占用。", settings.mcp_proxy_port)); }
         if tcp_ready(&settings.health_host, settings.health_port, 250) { return Err(format!("健康端口 {} 已被其他程序占用。", settings.health_port)); }
@@ -373,7 +373,7 @@ impl ProcessManager {
         // mcp-proxy exposes its Streamable HTTP router at the root path. The
         // project backends behind it still use /mcp, but the shared Tunnel
         // must target the proxy root so initialize requests are not 404.
-        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
+        tunnel_command.args(["run", "--profile", &settings.profile_name, "--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, magic_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()]).env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut tunnel = tunnel_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 Tunnel：{error}") })?;
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &tunnel) {
             terminate_child(&mut tunnel);
@@ -449,21 +449,11 @@ fn log_contains_marker(path: &Path, offset: u64, marker: &[u8]) -> bool {
     let start = usize::try_from(offset).unwrap_or(usize::MAX).min(bytes.len());
     bytes[start..].windows(marker.len()).any(|window| window == marker)
 }
-fn detect_clash_port(settings: &AppSettings) -> Result<u16, String> {
-    let compatible_port = if settings.proxy_port == 7897 { 7877 } else { 7897 };
-    detect_clash_port_with_legacy(settings, compatible_port)
-}
-fn detect_clash_port_with_legacy(settings: &AppSettings, legacy_port: u16) -> Result<u16, String> {
+fn detect_magic_port(settings: &AppSettings) -> Result<u16, String> {
     if tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
         return Ok(settings.proxy_port);
     }
-    if settings.proxy_port != legacy_port && tcp_ready(&settings.proxy_host, legacy_port, 700) {
-        return Ok(legacy_port);
-    }
-    if settings.proxy_port != legacy_port {
-        return Err(format!("Clash 代理未就绪：已检查 {}:{} 和兼容旧端口 {}:{}。请先启动 Clash 或在连接设置中确认端口。", settings.proxy_host, settings.proxy_port, settings.proxy_host, legacy_port));
-    }
-    Err(format!("Clash 代理未就绪：{}:{}。请先启动 Clash 后重试。", settings.proxy_host, settings.proxy_port))
+    Err(format!("Magic 代理未就绪：{}:{}。请先启动本地代理或在连接设置中确认 Magic 端口。", settings.proxy_host, settings.proxy_port))
 }
 fn tcp_ready(host: &str, port: u16, timeout_ms: u64) -> bool { let address = format!("{host}:{port}"); address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()).is_some_and(|socket| TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).is_ok()) }
 fn http_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
@@ -661,56 +651,56 @@ mod tests {
     }
 
     #[test]
-    fn shared_start_rejects_unavailable_clash_before_launching_children() {
+    fn shared_start_rejects_unavailable_magic_before_launching_children() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let mut settings = AppSettings::default();
         settings.proxy_port = port;
-        let mut manager = ProcessManager::new(PathBuf::from("target/test-logs-clash-preflight"));
+        let mut manager = ProcessManager::new(PathBuf::from("target/test-logs-magic-preflight"));
 
         let error = manager.start_shared(&settings, "unused-test-key").unwrap_err();
 
-        assert!(error.contains("Clash 代理未就绪"));
+        assert!(error.contains("Magic 代理未就绪"));
         assert!(manager.router.is_none());
         assert!(manager.proxy.is_none());
         assert!(manager.tunnel.is_none());
     }
 
     #[test]
-    fn clash_preflight_uses_legacy_listener_when_configured_port_is_stale() {
+    fn magic_preflight_uses_arbitrary_configured_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let configured_port = listener.local_addr().unwrap().port();
+        let mut settings = AppSettings::default();
+        settings.proxy_port = configured_port;
+
+        assert_eq!(detect_magic_port(&settings).unwrap(), configured_port);
+    }
+
+    #[test]
+    fn magic_preflight_does_not_use_another_listening_port() {
         let configured = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let configured_port = configured.local_addr().unwrap().port();
         drop(configured);
-        let legacy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let legacy_port = legacy.local_addr().unwrap().port();
+        let other_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut settings = AppSettings::default();
         settings.proxy_port = configured_port;
-        assert_eq!(detect_clash_port_with_legacy(&settings, legacy_port).unwrap(), legacy_port);
+
+        assert!(detect_magic_port(&settings).is_err());
+        drop(other_listener);
     }
 
     #[test]
-    fn clash_preflight_migrates_from_legacy_7897_to_current_7877_listener() {
-        let current = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let current_port = current.local_addr().unwrap().port();
-        let mut settings = AppSettings::default();
-        settings.proxy_port = 7897;
-        assert_eq!(detect_clash_port_with_legacy(&settings, current_port).unwrap(), current_port);
-    }
-
-    #[test]
-    fn clash_preflight_error_names_configured_and_legacy_ports() {
-        let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let configured_port = first.local_addr().unwrap().port();
-        drop(first);
-        let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let legacy_port = second.local_addr().unwrap().port();
-        drop(second);
+    fn magic_preflight_error_names_configured_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let configured_port = listener.local_addr().unwrap().port();
+        drop(listener);
         let mut settings = AppSettings::default();
         settings.proxy_port = configured_port;
-        let error = detect_clash_port_with_legacy(&settings, legacy_port).unwrap_err();
+        let error = detect_magic_port(&settings).unwrap_err();
+        assert!(error.contains("Magic 代理未就绪"));
+        assert!(error.contains(&settings.proxy_host));
         assert!(error.contains(&configured_port.to_string()));
-        assert!(error.contains(&legacy_port.to_string()));
     }
 
     fn connector_call(python: &str, project_id: &str) {
@@ -770,7 +760,7 @@ asyncio.run(main())
     }
 
     #[test]
-    #[ignore = "requires the installed DCFC runtime, Clash, Credential Manager key, MCP Proxy, and Tunnel"]
+    #[ignore = "requires the installed DCFC runtime, Magic proxy, Credential Manager key, MCP Proxy, and Tunnel"]
     fn live_multi_project_lifecycle_matrix() {
         let settings_path = PathBuf::from(std::env::var("DCFC_SETTINGS_PATH").expect("DCFC_SETTINGS_PATH is required"));
         let python = std::env::var("DCFC_MCP_CLIENT_PYTHON").expect("DCFC_MCP_CLIENT_PYTHON is required");
@@ -818,7 +808,7 @@ asyncio.run(main())
     }
 
     #[test]
-    #[ignore = "requires installed Delegate tools, mcp-proxy, Clash, and a Runtime API Key"]
+    #[ignore = "requires installed Delegate tools, mcp-proxy, Magic proxy, and a Runtime API Key"]
     fn live_start_is_idempotent_and_stop_cleans_up() {
         let settings = AppSettings::default();
         let mut manager = ProcessManager::new(PathBuf::from("target/live-test-logs"));

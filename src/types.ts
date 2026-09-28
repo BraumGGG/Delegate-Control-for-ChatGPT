@@ -25,6 +25,7 @@ export interface AppSettings {
   tunnel_executable: string;
   projects: ProjectConfig[];
   active_project_id: string | null;
+  recovery_notice?: string | null;
 }
 
 export interface ProjectRuntimeStatus {

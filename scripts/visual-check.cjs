@@ -75,7 +75,7 @@ const settings = {
     await page.waitForTimeout(800);
     for (const [view, label] of [["overview", "首页"], ["projects", "项目管理"], ["logs", "运行日志"], ["settings", "连接设置"]]) {
       if (view !== "overview") {
-        await page.getByRole("button", { name: label }).click();
+        await page.getByRole("button", { name: view === "settings" ? "设置" : label }).click();
         await page.waitForTimeout(180);
       }
       const metrics = await page.evaluate(() => ({

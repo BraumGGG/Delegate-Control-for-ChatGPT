@@ -54,7 +54,8 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<AppSettings, String> {
+pub fn save_settings(mut settings: AppSettings, state: State<'_, AppState>) -> Result<AppSettings, String> {
+    settings.recovery_notice = None;
     persist_settings(&state.settings_path, &settings)?;
     *state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())? = settings.clone();
     Ok(settings)
