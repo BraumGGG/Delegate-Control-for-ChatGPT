@@ -64,7 +64,6 @@ function App() {
     void api.getSettings().then((loaded) => {
       setSettings(loaded);
       setSavedSettings(loaded);
-      if (loaded.recovery_notice) setError(loaded.recovery_notice);
       setSelectedProjectId(loaded.active_project_id ?? loaded.projects[0]?.id ?? null);
       setLogProjectId(loaded.projects[0]?.id ?? null);
     }).catch((cause) => setError(String(cause)));
@@ -135,9 +134,6 @@ function App() {
     if (!settings) return;
     setBusy(true); setError("");
     try {
-      if (!Number.isInteger(settings.proxy_port) || settings.proxy_port < 1 || settings.proxy_port > 65535) {
-        throw new Error("Magic 端口必须是 1 到 65535 之间的整数。");
-      }
       const idMapping = new Map<string, string>();
       const usedIds = new Set(settings.projects.filter((project) => !draftProjectKeys[project.id]).map((project) => project.id));
       const projects = settings.projects.map((project) => {
@@ -338,7 +334,7 @@ function App() {
 
           {view === "settings" && <><section className="settings-band"><div className="settings-label"><KeyRound size={20} /><div><h2>Runtime API Key</h2><p>凭据由当前 Windows 账户加密保管。</p></div></div><div className="key-editor"><div className="input-with-icon"><input type={showKey ? "text" : "password"} value={runtimeKey} onChange={(event) => setRuntimeKey(event.target.value)} placeholder={status.credential_configured ? "已安全保存，输入新密钥可覆盖" : "粘贴 Runtime API Key"} /><button onClick={() => setShowKey((value) => !value)} title={showKey ? "隐藏密钥" : "显示密钥"} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button></div><button className="secondary-button" onClick={handleSaveKey} disabled={!runtimeKey.trim() || busy}><ShieldCheck size={17} />安全保存</button></div></section>
 
-          <section className="settings-band settings-grid-band"><div className="settings-label"><Network size={20} /><div><h2>共享网络与端口</h2><p>固定 Router 工具目录，项目通过 project_id 参数路由。</p></div></div><div className="form-grid"><Field label="Magic 主机（固定）"><input value={settings.proxy_host} readOnly /></Field><Field label="Magic 端口"><input type="number" min={1} max={65535} step={1} value={settings.proxy_port} onChange={(event) => setSettings({ ...settings, proxy_port: Number(event.target.value) })} /></Field><Field label="Router 端口"><input type="number" value={settings.router_port} onChange={(event) => setSettings({ ...settings, router_port: Number(event.target.value) })} /></Field><Field label="MCP Proxy 端口"><input type="number" value={settings.mcp_proxy_port} onChange={(event) => setSettings({ ...settings, mcp_proxy_port: Number(event.target.value) })} /></Field><Field label="健康端口"><input type="number" value={settings.health_port} onChange={(event) => setSettings({ ...settings, health_port: Number(event.target.value) })} /></Field></div></section>
+          <section className="settings-band settings-grid-band"><div className="settings-label"><Network size={20} /><div><h2>共享网络与端口</h2><p>固定 Router 工具目录，项目通过 project_id 参数路由。</p></div></div><div className="form-grid"><Field label="Magic 主机"><input value={settings.proxy_host} onChange={(event) => setSettings({ ...settings, proxy_host: event.target.value })} /></Field><Field label="Magic 端口"><input type="number" value={settings.proxy_port} onChange={(event) => setSettings({ ...settings, proxy_port: Number(event.target.value) })} /></Field><Field label="Router 端口"><input type="number" value={settings.router_port} onChange={(event) => setSettings({ ...settings, router_port: Number(event.target.value) })} /></Field><Field label="MCP Proxy 端口"><input type="number" value={settings.mcp_proxy_port} onChange={(event) => setSettings({ ...settings, mcp_proxy_port: Number(event.target.value) })} /></Field><Field label="健康端口"><input type="number" value={settings.health_port} onChange={(event) => setSettings({ ...settings, health_port: Number(event.target.value) })} /></Field></div></section>
 
           <section className="settings-band paths-band"><div className="settings-label"><MonitorCog size={20} /><div><h2>本机程序</h2><p>客户端管理项目 MCP、固定 Router、Proxy 与 Tunnel。</p></div></div><div className="path-list"><div className="path-edit-row"><span>MCP</span><input value={settings.mcp_executable} onChange={(event) => setSettings({ ...settings, mcp_executable: event.target.value })} /><button className="icon-button" onClick={() => void chooseMcpExecutable()} title="选择 chatgpt-delegate Connector" aria-label="选择 MCP Connector"><FolderOpen size={16} /></button></div><div className="capability-note"><StatusDot ready={status.text_editing_available} /><span>{status.connector_capability_message}</span></div><div className="path-edit-row"><span>MCP Proxy</span><input value={settings.proxy_executable} onChange={(event) => setSettings({ ...settings, proxy_executable: event.target.value })} /><button className="icon-button" onClick={() => void chooseProxyExecutable()} title="选择 MCP Proxy" aria-label="选择 MCP Proxy"><FolderOpen size={16} /></button></div><PathRow label="Tunnel" value={settings.tunnel_executable} /><PathRow label="Proxy 配置" value={settings.proxy_config_path} /><PathRow label="Router 注册表" value={settings.router_config_path} /></div></section></>}
         </div>}

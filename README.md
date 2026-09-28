@@ -58,23 +58,24 @@ delete_text_from_file
 - Windows Job Object 清理 MCP、Proxy、Tunnel 及其子进程
 - 系统托盘、单实例运行和关闭窗口隐藏
 
-## 外部依赖
+## 运行依赖
 
 - Windows 10/11 x64
-- Node.js 与 npm
-- Rust stable 工具链
-- `chatgpt-delegate.exe`
-- `mcp-proxy.exe`（外部依赖，DCFC 不打包、不提交二进制）
-- `chatgpt-delegate-edit.exe`（编辑版 Connector，可由项目脚本构建）
-- `tunnel-client.exe`
-- 本地 Magic HTTP 代理，默认 `127.0.0.1:7877`，端口可在连接设置中显式保存
+- 一个本地 Magic HTTP 代理；在“连接设置”中填写其实际监听端口
+- `mcp-proxy.exe`：从 `joshrotenberg/mcp-proxy` 官方 Release 单独获取；Gate A 验证版本为 v0.4.3
+- `tunnel-client.exe`：从 `openai/tunnel-client` 官方 Release 单独获取；Gate A 验证版本为 v0.0.14
+- `chatgpt-delegate-edit.exe`：当前由项目脚本构建，正式公开发布前仍需确定无需开发工具链的交付方式
+
+Gate A 的安装包不打包或下载两个外部 exe。下载后请将它们放在本机自选目录；
+在连接设置中指定 MCP Proxy 路径，Tunnel 路径的普通用户配置入口将在 Gate B
+加入。在 Gate B/D 完成前，当前安装包尚不满足新用户开箱即用要求。
 
 默认程序路径：
 
 ```text
 %USERPROFILE%\.local\bin\chatgpt-delegate.exe
 %USERPROFILE%\.local\bin\mcp-proxy.exe
-D:\tunnel-client\install\tunnel-client.exe
+%USERPROFILE%\.local\bin\tunnel-client.exe
 ```
 
 如果 `mcp-proxy.exe` 不在默认路径，可在“设置 → 本机程序”中选择它。启动前 DCFC 会检查所有外部程序是否存在。
@@ -83,6 +84,9 @@ D:\tunnel-client\install\tunnel-client.exe
 
 ## 本地开发与构建
 
+以下 Node.js、npm、Rust stable 和 Python 要求仅适用于从源码构建，
+不是目标安装版的最终用户要求。
+
 ```powershell
 npm install
 npm run build
@@ -90,8 +94,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri -- dev
 npm run tauri -- build
 ```
-
-发布版必须使用 `npm run tauri -- build`，该命令会先构建前端并把 `dist` 资源嵌入 Tauri 安装程序。不要用裸 `cargo build --release` 直接替换安装版，否则会保留开发模式的 `http://localhost:1420` 地址。
 
 安装包输出在：
 
@@ -102,7 +104,8 @@ src-tauri/target/release/bundle/msi/
 
 ## 配置与日志
 
-非敏感设置保存在 `%APPDATA%\Delegate Control\settings.json`，自动生成的 proxy 配置保存在 `%APPDATA%\Delegate Control\mcp-proxy.toml`，日志保存在 `%APPDATA%\Delegate Control\logs\`。这些本机文件不应提交到 Git。
+新版本的非敏感设置、proxy/Router 配置和日志保存在 `%USERPROFILE%\.delegate-control\`；
+历史 `%APPDATA%\Delegate Control\` 设置由兼容加载路径迁移并保留备份。这些本机文件不应提交到 Git。
 
 旧版本顶层 `output_directory` 会自动迁移为名为“默认项目”的项目配置。Runtime API Key 仍只通过 Windows Credential Manager 注入 Tunnel 子进程。
 

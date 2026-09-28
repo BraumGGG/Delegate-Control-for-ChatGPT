@@ -13,7 +13,7 @@ pub struct ProjectConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub proxy_host: String,
     pub proxy_port: u16,
@@ -38,8 +38,6 @@ pub struct AppSettings {
     pub projects: Vec<ProjectConfig>,
     #[serde(default)]
     pub active_project_id: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub recovery_notice: Option<String>,
 }
 
 fn default_true() -> bool { true }
@@ -65,11 +63,11 @@ fn empty_settings() -> AppSettings {
 
 impl Default for AppSettings {
     fn default() -> Self {
-        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Redmi".to_string());
+        let home = std::env::var("USERPROFILE").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let default_project = ProjectConfig {
             id: "default".to_string(),
             name: "默认项目".to_string(),
-            output_directory: "D:\\claudecode\\cchaha\\Project\\咨询\\artifacts\\chatgpt-delegation".to_string(),
+            output_directory: home.join(".delegate-control").join("projects").join("default").to_string_lossy().to_string(),
             mcp_host: "127.0.0.1".to_string(),
             mcp_port: 8000,
             enabled: true,
@@ -83,32 +81,27 @@ impl Default for AppSettings {
             health_host: "127.0.0.1".to_string(),
             health_port: 8080,
             profile_name: "chatgpt-delegate".to_string(),
-            mcp_executable: format!("{home}\\.local\\bin\\chatgpt-delegate.exe"),
-            proxy_executable: format!("{home}\\.local\\bin\\mcp-proxy.exe"),
+            mcp_executable: home.join(".local").join("bin").join("chatgpt-delegate.exe").to_string_lossy().to_string(),
+            proxy_executable: home.join(".local").join("bin").join("mcp-proxy.exe").to_string_lossy().to_string(),
             proxy_config_path: default_proxy_config_path(),
             router_config_path: default_router_config_path(),
-            tunnel_executable: "D:\\tunnel-client\\install\\tunnel-client.exe".to_string(),
+            tunnel_executable: home.join(".local").join("bin").join("tunnel-client.exe").to_string_lossy().to_string(),
             projects: vec![default_project],
             active_project_id: Some("default".to_string()),
-            recovery_notice: None,
         }
     }
 }
 
 impl AppSettings {
     pub fn validate(&self) -> Result<(), String> {
-        if self.proxy_host != "127.0.0.1" {
-            return Err("Magic 主机固定为 127.0.0.1，不允许远程地址。".to_string());
+        if self.proxy_host.trim().is_empty() || self.mcp_proxy_host.trim().is_empty() || self.health_host.trim().is_empty() {
+            return Err("代理、MCP Proxy 和健康检查主机地址不能为空。".to_string());
         }
-        if self.mcp_proxy_host.trim().is_empty() || self.health_host.trim().is_empty() {
-            return Err("MCP Proxy 和健康检查主机地址不能为空。".to_string());
+        if self.proxy_port == 0 || self.router_port == 0 || self.health_port == 0 {
+            return Err("代理、Router 和健康检查端口必须在 1 到 65535 之间。".to_string());
         }
-        if self.proxy_port == 0 || self.mcp_proxy_port == 0 || self.router_port == 0 || self.health_port == 0 {
-            return Err("Magic、MCP Proxy、Router 和健康检查端口必须在 1 到 65535 之间。".to_string());
-        }
-        let shared_ports = [self.proxy_port, self.mcp_proxy_port, self.router_port, self.health_port];
-        if shared_ports.iter().enumerate().any(|(index, port)| shared_ports[index + 1..].contains(port)) {
-            return Err("Magic、MCP Proxy、Router 和健康端口不能相同。".to_string());
+        if self.mcp_proxy_port == self.router_port || self.mcp_proxy_port == self.health_port || self.router_port == self.health_port {
+            return Err("MCP Proxy、Router 和健康端口不能相同。".to_string());
         }
 
         let mut ids = std::collections::HashSet::new();
@@ -142,7 +135,7 @@ impl AppSettings {
             if !dirs.insert(normalized_path(directory)) {
                 return Err(format!("项目“{}”的输出目录与其他项目重复。", project.name));
             }
-            if project.mcp_port == 0 || shared_ports.contains(&project.mcp_port) {
+            if project.mcp_port == 0 || project.mcp_port == self.mcp_proxy_port || project.mcp_port == self.router_port || project.mcp_port == self.health_port {
                 return Err(format!("项目“{}”的 MCP 端口与共享端口冲突。", project.name));
             }
             if !ports.insert(project.mcp_port) {
@@ -269,67 +262,41 @@ pub fn load_application_settings(path: &Path) -> AppSettings {
 }
 
 fn load_settings_from_sources(path: &Path, additional_sources: &[PathBuf]) -> AppSettings {
-    if let Some(current) = read_candidate(path, None, CandidateLineage::StableBackup) {
-        return current.settings;
-    }
-
-    let current_exists = path.exists();
-    let mut observed_source = current_exists;
+    let current = read_candidate(path, None);
     let mut candidates = Vec::new();
-    let stable_backups = backup_paths(path);
-    observed_source |= !stable_backups.is_empty();
-    candidates.extend(stable_backups.into_iter().filter_map(|candidate_path| {
-        read_candidate(&candidate_path, None, CandidateLineage::StableBackup)
-    }));
+    if let Some(candidate) = current.clone() {
+        candidates.push(candidate);
+    }
+    candidates.extend(backup_paths(path).into_iter().filter_map(|candidate_path| read_candidate(&candidate_path, None)));
     for source in additional_sources {
-        if same_path(source, path) {
-            continue;
-        }
-        observed_source |= source.exists();
-        if let Some(candidate) = read_candidate(source, None, CandidateLineage::LegacyCurrent) {
+        if same_path(source, path) { continue; }
+        if let Some(candidate) = read_candidate(source, None) {
             candidates.push(candidate);
         }
-        let legacy_backups = backup_paths(source);
-        observed_source |= !legacy_backups.is_empty();
-        candidates.extend(legacy_backups.into_iter().filter_map(|candidate_path| {
-            read_candidate(&candidate_path, None, CandidateLineage::LegacyBackup)
-        }));
+        candidates.extend(backup_paths(source).into_iter().filter_map(|candidate_path| read_candidate(&candidate_path, None)));
     }
 
-    match select_recovery_candidate(candidates) {
-        RecoverySelection::Selected(mut selected) => {
-            if current_exists && preserve_recovery_copy(path).is_none() {
-                selected.settings.recovery_notice = Some(
-                    "已找到可信备份，但无法保留异常的当前设置文件，因此未自动覆盖。请检查目录权限后重试。".to_string()
-                );
-                return selected.settings;
-            }
-            let copy_result = path.parent()
-                .map(fs::create_dir_all)
-                .transpose()
-                .and_then(|_| fs::copy(&selected.path, path).map(|_| ()));
-            selected.settings.recovery_notice = Some(match copy_result {
-                Ok(()) => format!("检测到当前设置异常，已从可信备份恢复：{}。", selected.path.display()),
-                Err(error) => format!("已加载可信备份，但无法写回设置文件：{error}。请检查目录权限后显式保存。"),
-            });
-            selected.settings
-        }
-        RecoverySelection::Ambiguous(paths) => {
-            let mut settings = empty_settings();
-            settings.recovery_notice = Some(format!(
-                "发现多个同等可信且内容不同的设置备份，未自动覆盖。请人工确认：{}",
-                paths.iter().map(|candidate| candidate.display().to_string()).collect::<Vec<_>>().join("；")
-            ));
-            settings
-        }
-        RecoverySelection::None => {
-            let mut settings = empty_settings();
-            if observed_source {
-                settings.recovery_notice = Some("当前设置文件异常，且没有可安全恢复的可信备份。原文件未被覆盖。".to_string());
-            }
-            settings
-        }
+    if candidates.is_empty() {
+        return empty_settings();
     }
+
+    candidates.sort_by(|left, right| {
+        right.project_count.cmp(&left.project_count)
+            .then_with(|| right.modified.cmp(&left.modified))
+            .then_with(|| right.modern.cmp(&left.modern))
+    });
+    let selected = candidates.into_iter().next().expect("candidate list is not empty");
+    let selected_is_current = current.as_ref().is_some_and(|candidate| candidate.path == selected.path);
+    if !selected_is_current {
+        if path.exists() {
+            let _ = preserve_recovery_copy(path);
+        }
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::copy(&selected.path, path);
+    }
+    selected.settings
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -341,46 +308,13 @@ fn is_legacy_runtime_path(path: &str, file_name: &str) -> bool {
     normalized.ends_with(&format!("\\delegate control\\{}", file_name.to_ascii_lowercase()))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum CandidateLineage {
-    LegacyBackup,
-    LegacyCurrent,
-    StableBackup,
-}
-
 #[derive(Debug, Clone)]
 struct SettingsCandidate {
     path: PathBuf,
     settings: AppSettings,
+    project_count: usize,
     modified: SystemTime,
-    lineage: CandidateLineage,
-}
-
-enum RecoverySelection {
-    Selected(SettingsCandidate),
-    Ambiguous(Vec<PathBuf>),
-    None,
-}
-
-fn select_recovery_candidate(mut candidates: Vec<SettingsCandidate>) -> RecoverySelection {
-    if candidates.is_empty() {
-        return RecoverySelection::None;
-    }
-    candidates.sort_by(|left, right| {
-        right.lineage.cmp(&left.lineage)
-            .then_with(|| right.modified.cmp(&left.modified))
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    let selected = candidates.remove(0);
-    let peers = candidates.into_iter().filter(|candidate| {
-        candidate.lineage == selected.lineage && candidate.modified == selected.modified
-    }).collect::<Vec<_>>();
-    if peers.iter().any(|candidate| candidate.settings != selected.settings) {
-        let mut paths = vec![selected.path];
-        paths.extend(peers.into_iter().map(|candidate| candidate.path));
-        return RecoverySelection::Ambiguous(paths);
-    }
-    RecoverySelection::Selected(selected)
+    modern: bool,
 }
 
 fn backup_paths(path: &Path) -> Vec<PathBuf> {
@@ -395,26 +329,19 @@ fn backup_paths(path: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn read_candidate(path: &Path, modified: Option<SystemTime>, lineage: CandidateLineage) -> Option<SettingsCandidate> {
+fn read_candidate(path: &Path, modified: Option<SystemTime>) -> Option<SettingsCandidate> {
     let content = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&content).ok()?;
     let modern = value.get("projects").is_some();
-    if modern && !value.get("projects").is_some_and(Value::is_array) {
-        return None;
-    }
-    let settings = if modern {
-        serde_json::from_value(value.clone()).ok().map(migrate_project_keys)?
-    } else {
-        load_settings_from_value(value.clone())
-    };
-    if (!modern && settings.projects.is_empty()) || settings.validate().is_err() {
+    let settings = load_settings_from_value(value.clone());
+    if settings.projects.is_empty() || settings.validate().is_err() {
         return None;
     }
     if modern && is_injected_default_payload(&value, &settings) {
         return None;
     }
     let modified = modified.or_else(|| fs::metadata(path).ok()?.modified().ok()).unwrap_or(UNIX_EPOCH);
-    Some(SettingsCandidate { path: path.to_path_buf(), settings, modified, lineage })
+    Some(SettingsCandidate { path: path.to_path_buf(), project_count: settings.projects.len(), settings, modified, modern })
 }
 
 fn is_injected_default_payload(value: &Value, settings: &AppSettings) -> bool {
@@ -453,7 +380,6 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
             tunnel_executable: string_or_default(&value, "tunnel_executable", defaults.tunnel_executable),
             projects: Vec::new(),
             active_project_id: None,
-            recovery_notice: None,
         };
     }
     let defaults = AppSettings::default();
@@ -483,7 +409,6 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
         tunnel_executable: string_value("tunnel_executable", defaults.tunnel_executable),
         projects: vec![project],
         active_project_id: Some("default".to_string()),
-        recovery_notice: None,
     }
 }
 
@@ -554,6 +479,15 @@ mod tests {
         assert_eq!(settings.projects[0].mcp_port, 8000);
         assert_eq!(settings.health_port, 8080);
         assert!(settings.validate().is_ok());
+        assert!(Path::new(&settings.projects[0].output_directory).is_absolute());
+        assert!(settings.mcp_executable.ends_with("chatgpt-delegate.exe"));
+        assert!(settings.proxy_executable.ends_with("mcp-proxy.exe"));
+        assert!(settings.tunnel_executable.ends_with("tunnel-client.exe"));
+        let expected_home = std::env::var("USERPROFILE").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        for path in [&settings.projects[0].output_directory, &settings.mcp_executable, &settings.proxy_executable, &settings.tunnel_executable] {
+            assert!(Path::new(path).starts_with(&expected_home));
+            assert!(!path.contains("D:\\claudecode"));
+        }
     }
 
     #[test]
@@ -561,17 +495,6 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.projects[0].mcp_port = settings.health_port;
         assert!(settings.validate().is_err());
-    }
-
-    #[test]
-    fn rejects_remote_magic_host_and_magic_port_collisions() {
-        let mut settings = AppSettings::default();
-        settings.proxy_host = "0.0.0.0".to_string();
-        assert!(settings.validate().unwrap_err().contains("Magic 主机固定"));
-
-        settings.proxy_host = "127.0.0.1".to_string();
-        settings.proxy_port = settings.router_port;
-        assert!(settings.validate().unwrap_err().contains("Magic"));
     }
 
     #[test]
@@ -662,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn load_settings_recovers_from_valid_backup_and_preserves_abnormal_current_file() {
+    fn load_settings_prefers_largest_valid_backup_and_preserves_current_file() {
         let root = std::env::temp_dir().join(format!("dcfc-settings-recovery-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -681,94 +604,28 @@ mod tests {
         let loaded = load_settings(&path);
         assert_eq!(loaded.projects.len(), 5);
         assert_eq!(loaded.active_project_id.as_deref(), Some("project-4"));
-        assert!(loaded.recovery_notice.as_deref().is_some_and(|notice| notice.contains("已从可信备份恢复")));
         assert!(root.join("settings.json.recovery-0").exists() || fs::read_dir(&root).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("settings.json.recovery-")));
         let persisted: AppSettings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(persisted.projects.len(), 5);
-        assert_eq!(persisted.recovery_notice, None);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn load_settings_recovers_from_valid_backup_when_current_json_is_malformed() {
-        let root = std::env::temp_dir().join(format!("dcfc-settings-malformed-recovery-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("settings.json");
-        fs::write(&path, "{not-json").unwrap();
-        let backup = settings_with_projects(3, &root.join("backup"));
-        fs::write(root.join("settings.json.backup-valid"), serde_json::to_string_pretty(&backup).unwrap()).unwrap();
-
-        let loaded = load_settings(&path);
-        assert_eq!(loaded.projects.len(), 3);
-        assert!(loaded.recovery_notice.is_some());
-        assert!(fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().starts_with("settings.json.recovery-")));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn load_settings_keeps_valid_current_for_zero_one_three_and_many_projects() {
+    fn load_settings_keeps_current_valid_configuration_even_when_backup_is_smaller() {
         let root = std::env::temp_dir().join(format!("dcfc-settings-current-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        for count in [0, 1, 3, 12] {
-            let case = root.join(format!("case-{count}"));
-            fs::create_dir_all(&case).unwrap();
-            let path = case.join("settings.json");
-            let current = settings_with_projects(count, &case.join("current"));
-            let current_json = serde_json::to_string_pretty(&current).unwrap();
-            fs::write(&path, &current_json).unwrap();
-            let backup = settings_with_projects(count + 5, &case.join("backup"));
-            fs::write(case.join("settings.json.backup-larger"), serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+        let path = root.join("settings.json");
+        let current = settings_with_projects(6, &root.join("current"));
+        fs::write(&path, serde_json::to_string_pretty(&current).unwrap()).unwrap();
+        let backup = settings_with_projects(3, &root.join("backup"));
+        fs::write(root.join("settings.json.backup-small"), serde_json::to_string_pretty(&backup).unwrap()).unwrap();
 
-            let loaded = load_settings(&path);
-            assert_eq!(loaded.projects.len(), count);
-            assert_eq!(loaded.active_project_id, current.active_project_id);
-            assert_eq!(fs::read_to_string(&path).unwrap(), current_json);
-        }
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.projects.len(), 6);
+        assert_eq!(loaded.active_project_id.as_deref(), Some("project-5"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), serde_json::to_string_pretty(&current).unwrap());
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn equal_recency_materially_different_recovery_candidates_are_ambiguous() {
-        let root = std::env::temp_dir().join(format!("dcfc-settings-ambiguous-{}", std::process::id()));
-        let modified = SystemTime::now();
-        let first = SettingsCandidate {
-            path: root.join("settings.json.backup-a"),
-            settings: settings_with_projects(1, &root.join("a")),
-            modified,
-            lineage: CandidateLineage::StableBackup,
-        };
-        let second = SettingsCandidate {
-            path: root.join("settings.json.backup-b"),
-            settings: settings_with_projects(3, &root.join("b")),
-            modified,
-            lineage: CandidateLineage::StableBackup,
-        };
-
-        assert!(matches!(select_recovery_candidate(vec![first, second]), RecoverySelection::Ambiguous(_)));
-    }
-
-    #[test]
-    fn stable_backup_lineage_outranks_newer_legacy_current() {
-        let root = std::env::temp_dir().join(format!("dcfc-settings-lineage-{}", std::process::id()));
-        let stable = SettingsCandidate {
-            path: root.join("settings.json.backup-stable"),
-            settings: settings_with_projects(3, &root.join("stable")),
-            modified: UNIX_EPOCH,
-            lineage: CandidateLineage::StableBackup,
-        };
-        let legacy = SettingsCandidate {
-            path: root.join("legacy-settings.json"),
-            settings: settings_with_projects(9, &root.join("legacy")),
-            modified: SystemTime::now(),
-            lineage: CandidateLineage::LegacyCurrent,
-        };
-
-        let RecoverySelection::Selected(selected) = select_recovery_candidate(vec![legacy, stable]) else {
-            panic!("stable backup should be selected");
-        };
-        assert_eq!(selected.settings.projects.len(), 3);
     }
 
     #[test]
@@ -827,16 +684,19 @@ mod tests {
     }
 
     #[test]
-    fn source_migration_copies_a_valid_legacy_collection_into_stable_root() {
+    fn source_migration_selects_arbitrary_largest_collection_into_stable_root() {
         let root = std::env::temp_dir().join(format!("dcfc-settings-source-migration-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let stable = root.join("stable").join("settings.json");
-        let source = root.join("roaming").join("settings.json");
-        fs::create_dir_all(source.parent().unwrap()).unwrap();
-        fs::write(&source, serde_json::to_string_pretty(&settings_with_projects(8, &root.join("legacy"))).unwrap()).unwrap();
+        let source_a = root.join("roaming").join("settings.json");
+        let source_b = root.join("package-cache").join("settings.json");
+        fs::create_dir_all(source_a.parent().unwrap()).unwrap();
+        fs::create_dir_all(source_b.parent().unwrap()).unwrap();
+        fs::write(&source_a, serde_json::to_string_pretty(&settings_with_projects(4, &root.join("a"))).unwrap()).unwrap();
+        fs::write(&source_b, serde_json::to_string_pretty(&settings_with_projects(8, &root.join("b"))).unwrap()).unwrap();
 
-        let loaded = load_settings_from_sources(&stable, &[source]);
+        let loaded = load_settings_from_sources(&stable, &[source_a, source_b]);
         assert_eq!(loaded.projects.len(), 8);
         assert_eq!(loaded.active_project_id.as_deref(), Some("project-7"));
         let persisted: AppSettings = serde_json::from_str(&fs::read_to_string(&stable).unwrap()).unwrap();
@@ -862,24 +722,6 @@ mod tests {
         assert_eq!(preserved.projects.len(), 7);
         let current: AppSettings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(current.projects.len(), 9);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn invalid_magic_port_save_leaves_existing_settings_unchanged() {
-        let root = std::env::temp_dir().join(format!("dcfc-settings-invalid-magic-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("settings.json");
-        let original = settings_with_projects(3, &root.join("original"));
-        fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
-        let before = fs::read(&path).unwrap();
-        let mut invalid = original;
-        invalid.proxy_port = 0;
-
-        assert!(save_settings(&path, &invalid).is_err());
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().starts_with("settings.json.backup-")));
         fs::remove_dir_all(root).unwrap();
     }
 

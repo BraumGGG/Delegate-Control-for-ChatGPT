@@ -1,8 +1,13 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$LegacyPath
+)
+
 $ErrorActionPreference = 'Stop'
 
-$legacyPath = 'D:\tunnel-client\install\chatgpt-delegate-control\runtime-api-key.xml'
-if (-not (Test-Path -LiteralPath $legacyPath)) {
-    throw "找不到旧的加密密钥文件：$legacyPath"
+if (-not (Test-Path -LiteralPath $LegacyPath -PathType Leaf)) {
+    throw "找不到旧的加密密钥文件：$LegacyPath"
 }
 
 Add-Type -TypeDefinition @'
@@ -67,7 +72,7 @@ public static class DelegateCredentialWriter
 }
 '@
 
-$secureKey = Import-Clixml -LiteralPath $legacyPath
+$secureKey = Import-Clixml -LiteralPath $LegacyPath
 $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
 try {
     $plainKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)

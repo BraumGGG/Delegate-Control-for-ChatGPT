@@ -15,23 +15,23 @@ const initialStatus = {
   proxy_pid: null, router_pid: null, mcp_pid: null, tunnel_pid: null, credential_configured: true, text_editing_available: true,
   connector_capability_message: "当前 MCP 支持项目内文本文件编辑。", message: "连接仅在需要时启动。",
   projects: [
-    { project_id: "screencast", name: "ScreenCast", output_directory: "D:\\Projects\\ScreenCast", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
-    { project_id: "new-project", name: "Realize", output_directory: "D:\\Projects\\Realize", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
-    { project_id: "new-project-2", name: "DCFC", output_directory: "D:\\Projects\\DCFC", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "screencast", name: "ScreenCast", output_directory: "C:\\Example\\Projects\\ScreenCast", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "new-project", name: "Realize", output_directory: "C:\\Example\\Projects\\Realize", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "new-project-2", name: "DCFC", output_directory: "C:\\Example\\Projects\\DCFC", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
   ],
 };
 
 const initialSettings = {
   proxy_host: "127.0.0.1", proxy_port: 7897, mcp_proxy_host: "127.0.0.1", mcp_proxy_port: 8100, router_port: 8101,
   health_port: 8080, health_host: "127.0.0.1", profile_name: "chatgpt-delegate",
-  mcp_executable: "D:\\DCFC\\install\\chatgpt-delegate-edit.exe", proxy_executable: "D:\\DCFC\\install\\mcp-proxy.exe",
-  proxy_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
-  router_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\router-projects.json",
-  tunnel_executable: "D:\\tunnel-client\\install\\tunnel-client.exe",
+  mcp_executable: "C:\\Example\\DCFC\\chatgpt-delegate-edit.exe", proxy_executable: "C:\\Example\\DCFC\\mcp-proxy.exe",
+  proxy_config_path: "C:\\Example\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
+  router_config_path: "C:\\Example\\AppData\\Roaming\\Delegate Control\\router-projects.json",
+  tunnel_executable: "C:\\Example\\Tools\\tunnel-client.exe",
   projects: [
-    { id: "screencast", name: "ScreenCast", output_directory: "D:\\Projects\\ScreenCast", mcp_host: "127.0.0.1", mcp_port: 8002, enabled: true },
-    { id: "new-project", name: "Realize", output_directory: "D:\\Projects\\Realize", mcp_host: "127.0.0.1", mcp_port: 8000, enabled: true },
-    { id: "new-project-2", name: "DCFC", output_directory: "D:\\Projects\\DCFC", mcp_host: "127.0.0.1", mcp_port: 8001, enabled: true },
+    { id: "screencast", name: "ScreenCast", output_directory: "C:\\Example\\Projects\\ScreenCast", mcp_host: "127.0.0.1", mcp_port: 8002, enabled: true },
+    { id: "new-project", name: "Realize", output_directory: "C:\\Example\\Projects\\Realize", mcp_host: "127.0.0.1", mcp_port: 8000, enabled: true },
+    { id: "new-project-2", name: "DCFC", output_directory: "C:\\Example\\Projects\\DCFC", mcp_host: "127.0.0.1", mcp_port: 8001, enabled: true },
   ],
   active_project_id: "new-project-2",
 };

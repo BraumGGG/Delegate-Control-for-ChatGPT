@@ -13,6 +13,12 @@ artifacts/
 
 # Local planning/runtime output
 docs/superpowers/
+docs/product-designer-handoff/
+docs/plans/
+HANDOFF.md
+NEW_SESSION_PROMPT.md
+DEVELOPER_HANDOFF_PROMPT.md
+docx_extract.txt
 *.log
 logs/
 

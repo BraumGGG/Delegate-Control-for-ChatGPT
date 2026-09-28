@@ -17,9 +17,9 @@ const status = {
   credential_configured: true,
   message: "ChatGPT Delegate 连接已建立。",
   projects: [
-    { project_id: "screencast", name: "ScreenCast", output_directory: "D:\\claudecode\\cchaha\\Project\\ScreenCast\\docs\\product-design-handoff", overall: "running", mcp_ready: true, mcp_pid: 8002, message: "项目 MCP 已就绪。" },
-    { project_id: "realize", name: "Realize", output_directory: "D:\\claudecode\\cchaha\\Project\\workflow\\.worktrees\\agent-runtime-v2\\docs\\product-designer-handoff", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
-    { project_id: "dcfc", name: "DCFC", output_directory: "D:\\claudecode\\cchaha\\Project\\Delegate Control for ChatGPT\\docs\\product-designer-handoff", overall: "running", mcp_ready: true, mcp_pid: 8003, message: "项目 MCP 已就绪。" },
+    { project_id: "screencast", name: "ScreenCast", output_directory: "C:\\Example\\Projects\\ScreenCast\\docs\\product-design-handoff", overall: "running", mcp_ready: true, mcp_pid: 8002, message: "项目 MCP 已就绪。" },
+    { project_id: "realize", name: "Realize", output_directory: "C:\\Example\\Projects\\workflow\\.worktrees\\agent-runtime-v2\\docs\\product-designer-handoff", overall: "stopped", mcp_ready: false, mcp_pid: null, message: "项目未启动。" },
+    { project_id: "dcfc", name: "DCFC", output_directory: "C:\\Example\\Projects\\Delegate Control\\docs\\product-designer-handoff", overall: "running", mcp_ready: true, mcp_pid: 8003, message: "项目 MCP 已就绪。" },
   ],
 };
 const settings = {
@@ -30,14 +30,14 @@ const settings = {
   health_port: 8080,
   health_host: "127.0.0.1",
   profile_name: "chatgpt-delegate",
-  mcp_executable: "C:\\Users\\Redmi\\.local\\bin\\chatgpt-delegate.exe",
-  proxy_executable: "C:\\Users\\Redmi\\.local\\bin\\mcp-proxy.exe",
-  proxy_config_path: "C:\\Users\\Redmi\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
-  tunnel_executable: "D:\\tunnel-client\\install\\tunnel-client.exe",
+  mcp_executable: "C:\\Example\\.local\\bin\\chatgpt-delegate.exe",
+  proxy_executable: "C:\\Example\\.local\\bin\\mcp-proxy.exe",
+  proxy_config_path: "C:\\Example\\AppData\\Roaming\\Delegate Control\\mcp-proxy.toml",
+  tunnel_executable: "C:\\Example\\.local\\bin\\tunnel-client.exe",
   projects: [
-    { id: "screencast", name: "ScreenCast", output_directory: "D:\\claudecode\\cchaha\\Project\\ScreenCast\\docs\\product-design-handoff", mcp_host: "127.0.0.1", mcp_port: 8002, enabled: true },
-    { id: "realize", name: "Realize", output_directory: "D:\\claudecode\\cchaha\\Project\\workflow\\.worktrees\\agent-runtime-v2\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8003, enabled: true },
-    { id: "dcfc", name: "DCFC", output_directory: "D:\\claudecode\\cchaha\\Project\\Delegate Control for ChatGPT\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8004, enabled: true },
+    { id: "screencast", name: "ScreenCast", output_directory: "C:\\Example\\Projects\\ScreenCast\\docs\\product-design-handoff", mcp_host: "127.0.0.1", mcp_port: 8002, enabled: true },
+    { id: "realize", name: "Realize", output_directory: "C:\\Example\\Projects\\workflow\\.worktrees\\agent-runtime-v2\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8003, enabled: true },
+    { id: "dcfc", name: "DCFC", output_directory: "C:\\Example\\Projects\\Delegate Control\\docs\\product-designer-handoff", mcp_host: "127.0.0.1", mcp_port: 8004, enabled: true },
   ],
   active_project_id: "dcfc",
 };
@@ -75,7 +75,7 @@ const settings = {
     await page.waitForTimeout(800);
     for (const [view, label] of [["overview", "首页"], ["projects", "项目管理"], ["logs", "运行日志"], ["settings", "连接设置"]]) {
       if (view !== "overview") {
-        await page.getByRole("button", { name: view === "settings" ? "设置" : label }).click();
+        await page.getByRole("button", { name: label }).click();
         await page.waitForTimeout(180);
       }
       const metrics = await page.evaluate(() => ({
