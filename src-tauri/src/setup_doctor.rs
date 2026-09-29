@@ -75,7 +75,7 @@ fn probe_public_endpoint(endpoint: &str) -> PublicProbe {
     let curl = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string())
         + r"\System32\curl.exe";
     let base = Command::new(&curl)
-        .args(["--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--proto", "=https",
+        .args(["-q", "--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--proto", "=https",
             "--resolve", &resolve, "--head", "--output", "NUL", "--write-out", "%{http_code}", endpoint])
         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
         .output();
@@ -87,7 +87,7 @@ fn probe_public_endpoint(endpoint: &str) -> PublicProbe {
     }
     let body = r#"{"jsonrpc":"2.0","id":"dcfc-doctor","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"dcfc-setup-doctor","version":"0.1.0"}}}"#;
     let response = Command::new(&curl)
-        .args(["--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--max-filesize", "16384",
+        .args(["-q", "--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--max-filesize", "16384",
             "--proto", "=https", "--resolve", &resolve, "--header", "Content-Type: application/json",
             "--header", "Accept: application/json, text/event-stream",
             "--header", "MCP-Protocol-Version: 2025-06-18",
