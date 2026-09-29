@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, DelegateStatus, LogSource, RuntimeReadiness } from "./types";
+import type { AppSettings, DelegateStatus, DoctorReport, LogSource, RuntimeReadiness } from "./types";
 
 export const api = {
   getStatus: () => invoke<DelegateStatus>("get_status"),
@@ -13,6 +13,8 @@ export const api = {
   stopProject: (projectId: string) => invoke<DelegateStatus>("stop_project", { projectId }),
   getSettings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => invoke<AppSettings>("save_settings", { settings }),
+  savePublicBaseUrl: (publicBaseUrl: string) => invoke<string>("save_public_base_url", { publicBaseUrl }),
+  runSetupDoctor: () => invoke<DoctorReport>("run_setup_doctor"),
   migrateProjectKey: (oldProjectId: string, newProjectId: string) => invoke<AppSettings>("migrate_project_key", { oldProjectId, newProjectId }),
   saveRuntimeKey: (key: string) => invoke<void>("save_runtime_key", { key }),
   readLogs: (source: LogSource, projectId?: string) => invoke<string>("read_logs", { source, projectId: projectId ?? null }),

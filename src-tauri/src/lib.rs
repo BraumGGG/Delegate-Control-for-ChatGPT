@@ -3,6 +3,7 @@ mod config;
 mod credentials;
 mod process_manager;
 mod proxy_config;
+mod setup_doctor;
 
 use config::{app_data_root, apply_managed_runtime_path, load_application_settings, AppSettings};
 use process_manager::{DelegateStatus, ProcessManager};
@@ -85,6 +86,8 @@ pub fn run() {
             commands::stop_project,
             commands::get_settings,
             commands::save_settings,
+            commands::save_public_base_url,
+            commands::run_setup_doctor,
             commands::migrate_project_key,
             commands::save_runtime_key,
             commands::read_logs,

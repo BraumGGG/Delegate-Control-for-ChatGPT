@@ -9,6 +9,7 @@
     "test:project-identity": "node --test --experimental-strip-types src/projectIdentity.test.ts",
     "check:project-identity-ui": "node scripts/project-identity-check.cjs",
     "check:onboarding": "node scripts/onboarding-check.cjs",
+    "check:setup-doctor": "node scripts/setup-doctor-check.cjs",
     "check:multi-project": "node scripts/multi-project-check.cjs",
     "check:managed-runtime": "node scripts/managed-runtime-check.cjs",
     "release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",

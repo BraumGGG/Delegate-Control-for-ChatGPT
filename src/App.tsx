@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Check, ChevronRight, CircleAlert, Copy, Eye, EyeOff, Folder, FolderOpen, Grid2X2, KeyRound, Link2, LoaderCircle, MonitorCog, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, RotateCw, Save, Search, Server, Settings2, ShieldCheck, Square, SquareTerminal, Trash2, Unplug } from "lucide-react";
+import { Activity, Check, ChevronRight, CircleAlert, Copy, Eye, EyeOff, Folder, FolderOpen, Grid2X2, KeyRound, Link2, LoaderCircle, MonitorCog, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, RotateCw, Save, Search, Server, Settings2, ShieldCheck, Square, SquareTerminal, Stethoscope, Trash2, Unplug } from "lucide-react";
 import { api } from "./api";
+import { SetupDoctor } from "./SetupDoctor";
 import { getLegacyProjectKeyProposal, PROJECT_KEY_PATTERN, suggestProjectKey, validateProjectKeyCandidate } from "./projectIdentity";
-import type { AppSettings, DelegateStatus, LogSource, ProjectConfig, ProjectRuntimeStatus, RuntimeReadiness, ViewId } from "./types";
+import type { AppSettings, DelegateStatus, DoctorReport, LogSource, ProjectConfig, ProjectRuntimeStatus, RuntimeReadiness, ViewId } from "./types";
 
 const EMPTY_STATUS: DelegateStatus = {
   overall: "stopped", proxy_ready: false, router_ready: false, mcp_proxy_ready: false, mcp_ready: false, tunnel_ready: false, proxy_pid: null, router_pid: null, mcp_pid: null, tunnel_pid: null, credential_configured: false, text_editing_available: false, connector_capability_message: "正在检测 Connector 文件编辑能力", message: "正在读取本机状态", projects: [],
@@ -14,6 +15,7 @@ const NAV_ITEMS = [
   { id: "projects" as const, label: "项目管理", icon: Grid2X2 },
   { id: "logs" as const, label: "运行日志", icon: SquareTerminal },
   { id: "settings" as const, label: "连接设置", icon: Settings2 },
+  { id: "doctor" as const, label: "安装诊断", icon: Stethoscope },
 ];
 
 type DraftProjectKey = { value: string; automatic: boolean };
@@ -98,6 +100,11 @@ function App() {
   const [wizardVisible, setWizardVisible] = useState(false);
   const [wizardRuntimeKey, setWizardRuntimeKey] = useState("");
   const [wizardError, setWizardError] = useState("");
+  const [publicUrlDraft, setPublicUrlDraft] = useState("");
+  const [publicUrlBusy, setPublicUrlBusy] = useState(false);
+  const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
+  const [doctorLoading, setDoctorLoading] = useState(false);
+  const [doctorError, setDoctorError] = useState("");
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await api.getStatus()); } catch (cause) { setError(String(cause)); }
@@ -117,6 +124,7 @@ function App() {
     void api.getSettings().then((loaded) => {
       setSettings(loaded);
       setSavedSettings(loaded);
+      setPublicUrlDraft(loaded.public_base_url ?? "");
       setSelectedProjectId(loaded.active_project_id ?? loaded.projects[0]?.id ?? null);
       setLogProjectId(loaded.projects[0]?.id ?? null);
       if (loaded.projects.length === 0) {
@@ -150,9 +158,21 @@ function App() {
     return () => window.clearInterval(timer);
   }, [view, refreshLogs]);
 
+  const refreshDoctor = useCallback(async () => {
+    setDoctorLoading(true);
+    setDoctorError("");
+    try { setDoctorReport(await api.runSetupDoctor()); }
+    catch (cause) { setDoctorError(String(cause)); }
+    finally { setDoctorLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (view === "doctor") void refreshDoctor();
+  }, [view, refreshDoctor]);
+
   const copy = useMemo(() => stateCopy(status), [status]);
-  const pageTitle = view === "overview" ? "首页" : view === "projects" ? "项目管理" : view === "logs" ? "运行日志" : "连接设置";
-  const pageEyebrow = view === "overview" ? "CONNECTION CONSOLE" : view === "projects" ? "PROJECT MANAGEMENT" : view === "logs" ? "RUNTIME TRACE" : "LOCAL CONFIGURATION";
+  const pageTitle = view === "overview" ? "首页" : view === "projects" ? "项目管理" : view === "logs" ? "运行日志" : view === "doctor" ? "安装诊断" : "连接设置";
+  const pageEyebrow = view === "overview" ? "CONNECTION CONSOLE" : view === "projects" ? "PROJECT MANAGEMENT" : view === "logs" ? "RUNTIME TRACE" : view === "doctor" ? "SETUP DOCTOR" : "LOCAL CONFIGURATION";
   const globalTone = status.overall === "running" ? "running" : status.overall === "failed" || status.overall === "starting" || status.overall === "stopping" ? "degraded" : "offline";
   const globalLabel = globalTone === "running" ? "ONLINE" : globalTone === "degraded" ? "DEGRADED" : "OFFLINE";
   const activeProjectId = selectedProjectId ?? settings?.active_project_id ?? null;
@@ -209,7 +229,7 @@ function App() {
   }
 
   async function handleSaveSettings() {
-    if (!settings) return;
+    if (!settings || publicUrlBusy) return;
     setBusy(true); setError("");
     try {
       const idMapping = new Map<string, string>();
@@ -239,6 +259,19 @@ function App() {
     if (!runtimeKey.trim()) return;
     setBusy(true); setError("");
     try { await api.saveRuntimeKey(runtimeKey.trim()); setRuntimeKey(""); setNotice("Runtime API Key 已写入 Windows 安全存储。"); await refreshStatus(); } catch (cause) { setError(String(cause)); } finally { setBusy(false); }
+  }
+
+  async function handleSavePublicUrl() {
+    if (busy || publicUrlBusy) return;
+    setPublicUrlBusy(true); setError("");
+    try {
+      const normalized = await api.savePublicBaseUrl(publicUrlDraft);
+      setPublicUrlDraft(normalized);
+      setSettings((current) => current ? { ...current, public_base_url: normalized } : current);
+      setSavedSettings((current) => current ? { ...current, public_base_url: normalized } : current);
+      setNotice("Public URL 已保存。此项只影响 ChatGPT 注册准备，无需重启本机连接。");
+    } catch (cause) { setError(String(cause)); }
+    finally { setPublicUrlBusy(false); }
   }
 
   function updateWizardDraft(patch: Partial<WizardDraft>) {
@@ -506,7 +539,9 @@ function App() {
 
         {view === "logs" && <div className="view logs-view"><div className="view-heading"><div><span className="eyebrow">RUNTIME TRACE</span><h1>运行日志</h1></div><button className="secondary-button" onClick={() => void api.openLogDirectory()}><FolderOpen size={18} />打开目录</button></div><div className="segmented-control" role="tablist"><button className={logSource === "mcp" ? "is-active" : ""} onClick={() => setLogSource("mcp")}><Server size={16} />项目 MCP</button><button className={logSource === "router" ? "is-active" : ""} onClick={() => setLogSource("router")}><Server size={16} />Router MCP</button><button className={logSource === "proxy" ? "is-active" : ""} onClick={() => setLogSource("proxy")}><Network size={16} />MCP Proxy</button><button className={logSource === "tunnel" ? "is-active" : ""} onClick={() => setLogSource("tunnel")}><ShieldCheck size={16} />Secure Tunnel</button></div>{logSource === "mcp" && <label className="log-project-select"><span>项目</span><select value={logProjectId ?? ""} onChange={(event) => setLogProjectId(event.target.value || null)}>{settings?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}<pre className="log-console">{logs}</pre><div className="log-footer"><StatusDot ready={status.overall === "running"} />每 2.5 秒自动刷新<button className="text-button" onClick={refreshLogs}><RefreshCw size={15} />立即刷新</button></div></div>}
 
-        {(view === "settings" || view === "projects") && settings && <div className="view settings-view"><div className="view-heading"><div><span className="eyebrow">LOCAL CONFIGURATION</span><h1>{view === "projects" ? "项目管理" : "连接设置"}</h1><p className="view-subtitle">管理项目身份、输出目录、连接参数与本机运行组件。</p></div><button className="primary-compact" onClick={handleSaveSettings} disabled={busy}><Save size={17} />保存设置</button></div>
+        {view === "doctor" && <SetupDoctor report={doctorReport} loading={doctorLoading} error={doctorError} onRefresh={() => void refreshDoctor()} onCopy={(value) => void navigator.clipboard.writeText(value).then(() => setNotice("注册地址已复制。")).catch((cause) => setError(String(cause)))} onSettings={() => setView("settings")} />}
+
+        {(view === "settings" || view === "projects") && settings && <div className="view settings-view"><div className="view-heading"><div><span className="eyebrow">LOCAL CONFIGURATION</span><h1>{view === "projects" ? "项目管理" : "连接设置"}</h1><p className="view-subtitle">管理项目身份、输出目录、连接参数与本机运行组件。</p></div><button className="primary-compact" onClick={handleSaveSettings} disabled={busy || publicUrlBusy}><Save size={17} />保存设置</button></div>
           {view === "projects" && <section className="settings-band project-management-band">
             <div className="settings-label"><MonitorCog size={20} /><div><h2>项目目录</h2><p>项目名称用于识别，Project Key / project_id 用于 ChatGPT 和 Router 路由。</p></div></div>
             <div className="project-editor">
@@ -546,6 +581,8 @@ function App() {
           </section>}
 
           {view === "settings" && <><section className="settings-band"><div className="settings-label"><KeyRound size={20} /><div><h2>Runtime API Key</h2><p>凭据由当前 Windows 账户加密保管。</p></div></div><div className="key-editor"><div className="input-with-icon"><input type={showKey ? "text" : "password"} value={runtimeKey} onChange={(event) => setRuntimeKey(event.target.value)} placeholder={status.credential_configured ? "已安全保存，输入新密钥可覆盖" : "粘贴 Runtime API Key"} /><button onClick={() => setShowKey((value) => !value)} title={showKey ? "隐藏密钥" : "显示密钥"} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button></div><button className="secondary-button" onClick={handleSaveKey} disabled={!runtimeKey.trim() || busy}><ShieldCheck size={17} />安全保存</button></div></section>
+
+          <section className="settings-band"><div className="settings-label"><Link2 size={20} /><div><h2>Public URL / 公网地址</h2><p>仅用于 ChatGPT 注册和公网诊断；运行中也可修改。</p></div></div><div className="public-url-editor"><label className="field"><span>HTTPS 基础地址</span><input aria-label="Public URL / 公网地址" type="url" value={publicUrlDraft} onChange={(event) => setPublicUrlDraft(event.target.value)} placeholder="https://your-domain.example.com" spellCheck={false} /></label><button className="secondary-button" onClick={() => void handleSavePublicUrl()} disabled={busy || publicUrlBusy || publicUrlDraft === (savedSettings?.public_base_url ?? "")}>{publicUrlBusy ? <LoaderCircle size={16} className="spin" /> : <Save size={16} />}保存地址</button><small>只填写公网基础地址，不输入 /mcp；保存后到“安装诊断”查看实际注册地址。</small></div></section>
 
           <section className="settings-band settings-grid-band"><div className="settings-label"><Network size={20} /><div><h2>共享网络与端口</h2><p>固定 Router 工具目录，项目通过 project_id 参数路由。</p></div></div><div className="form-grid"><Field label="Magic 主机"><input value={settings.proxy_host} onChange={(event) => setSettings({ ...settings, proxy_host: event.target.value })} /></Field><Field label="Magic 端口"><input type="number" value={settings.proxy_port} onChange={(event) => setSettings({ ...settings, proxy_port: Number(event.target.value) })} /></Field><Field label="Router 端口"><input type="number" value={settings.router_port} onChange={(event) => setSettings({ ...settings, router_port: Number(event.target.value) })} /></Field><Field label="MCP Proxy 端口"><input type="number" value={settings.mcp_proxy_port} onChange={(event) => setSettings({ ...settings, mcp_proxy_port: Number(event.target.value) })} /></Field><Field label="健康端口"><input type="number" value={settings.health_port} onChange={(event) => setSettings({ ...settings, health_port: Number(event.target.value) })} /></Field></div></section>
 

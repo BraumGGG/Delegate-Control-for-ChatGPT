@@ -19,6 +19,7 @@ export interface AppSettings {
   health_port: number;
   profile_name: string;
   tunnel_id?: string;
+  public_base_url?: string;
   mcp_executable: string;
   proxy_executable: string;
   proxy_config_path: string;
@@ -63,5 +64,22 @@ export interface RuntimeReadiness {
   credential_configured: boolean;
 }
 
-export type ViewId = "overview" | "projects" | "logs" | "settings";
+export interface DoctorCheck {
+  id: string;
+  label: string;
+  scope: "shared" | "project" | "registration";
+  project_id: string | null;
+  state: "ready" | "action" | "pending";
+  detail: string;
+  action: string;
+}
+
+export interface DoctorReport {
+  checks: DoctorCheck[];
+  registration_endpoint: string | null;
+  local_ready: boolean;
+  registration_ready: boolean;
+}
+
+export type ViewId = "overview" | "projects" | "logs" | "settings" | "doctor";
 export type LogSource = "mcp" | "router" | "proxy" | "tunnel";

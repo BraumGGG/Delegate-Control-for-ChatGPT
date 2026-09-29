@@ -1,4 +1,4 @@
-use crate::{config::{migrate_project_key_in_settings, save_settings as persist_settings, AppSettings}, credentials, AppState};
+use crate::{config::{migrate_project_key_in_settings, normalize_public_base_url, save_settings as persist_settings, AppSettings}, credentials, setup_doctor, AppState};
 use std::path::Path;
 use tauri::State;
 
@@ -66,9 +66,32 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let mut settings = settings;
+    settings.public_base_url = if settings.public_base_url.trim().is_empty() { String::new() } else { normalize_public_base_url(&settings.public_base_url)? };
     persist_settings(&state.settings_path, &settings)?;
     *state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())? = settings.clone();
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn save_public_base_url(public_base_url: String, state: State<'_, AppState>) -> Result<String, String> {
+    let normalized = if public_base_url.trim().is_empty() { String::new() } else { normalize_public_base_url(&public_base_url)? };
+    let mut settings = state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?;
+    let mut next = settings.clone();
+    next.public_base_url = normalized.clone();
+    persist_settings(&state.settings_path, &next)?;
+    *settings = next;
+    Ok(normalized)
+}
+
+#[tauri::command]
+pub async fn run_setup_doctor(state: State<'_, AppState>) -> Result<setup_doctor::DoctorReport, String> {
+    let app_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = app_state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+        let status = app_state.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.status(&settings);
+        Ok(setup_doctor::diagnose(&settings, &status))
+    }).await.map_err(|error| format!("诊断任务异常：{error}"))?
 }
 
 #[tauri::command]

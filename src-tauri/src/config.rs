@@ -30,6 +30,8 @@ pub struct AppSettings {
     pub profile_name: String,
     #[serde(default)]
     pub tunnel_id: String,
+    #[serde(default)]
+    pub public_base_url: String,
     pub mcp_executable: String,
     pub proxy_executable: String,
     pub proxy_config_path: String,
@@ -117,6 +119,7 @@ impl Default for AppSettings {
             health_port: 8080,
             profile_name: "chatgpt-delegate".to_string(),
             tunnel_id: String::new(),
+            public_base_url: String::new(),
             mcp_executable: home.join(".local").join("bin").join("chatgpt-delegate.exe").to_string_lossy().to_string(),
             proxy_executable: home.join(".local").join("bin").join("mcp-proxy.exe").to_string_lossy().to_string(),
             proxy_config_path: default_proxy_config_path(),
@@ -280,6 +283,25 @@ pub fn load_application_settings(path: &Path) -> AppSettings {
     load_application_settings_with_resource(path, None)
 }
 
+pub fn normalize_public_base_url(input: &str) -> Result<String, String> {
+    let url = url::Url::parse(input.trim()).map_err(|_| "Public URL 必须是有效的 HTTPS 公网地址。".to_string())?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some()
+        || url.query().is_some() || url.fragment().is_some() || url.path() != "/" {
+        return Err("Public URL 只能填写 HTTPS 基础地址，不包含路径、账号、查询或片段。".to_string());
+    }
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return Err("Public URL 必须使用公开域名，不能使用本机或 IP 地址。".to_string());
+    };
+    let host = host.to_ascii_lowercase();
+    if !host.contains('.') || host.starts_with('.') || host.ends_with('.')
+        || host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".localdomain")
+        || host.ends_with(".lan") || host.ends_with(".home") || host.ends_with(".internal")
+        || host.ends_with(".test") || host.ends_with(".invalid") || host.ends_with(".example") {
+        return Err("Public URL 必须使用可公开访问的域名。".to_string());
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
 pub fn load_application_settings_with_resource(path: &Path, resource_dir: Option<&Path>) -> AppSettings {
     let sources = legacy_settings_paths();
     let mut settings = load_settings_from_sources(path, &sources);
@@ -417,6 +439,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
             health_port: number_or_default(&value, "health_port", defaults.health_port),
             profile_name: string_or_default(&value, "profile_name", defaults.profile_name),
             tunnel_id: string_or_default(&value, "tunnel_id", defaults.tunnel_id),
+            public_base_url: string_or_default(&value, "public_base_url", defaults.public_base_url),
             mcp_executable: string_or_default(&value, "mcp_executable", defaults.mcp_executable),
             proxy_executable: defaults.proxy_executable,
             proxy_config_path: defaults.proxy_config_path,
@@ -447,6 +470,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
         health_port: number_value("health_port", defaults.health_port),
         profile_name: string_value("profile_name", defaults.profile_name),
         tunnel_id: string_value("tunnel_id", defaults.tunnel_id),
+        public_base_url: string_value("public_base_url", defaults.public_base_url),
         mcp_executable: string_value("mcp_executable", defaults.mcp_executable),
         proxy_executable: defaults.proxy_executable,
         proxy_config_path: defaults.proxy_config_path,
@@ -739,6 +763,28 @@ mod tests {
         assert!(loaded.projects.is_empty());
         assert_eq!(loaded.active_project_id, None);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_url_is_optional_normalized_and_backward_compatible() {
+        let legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        let mut legacy = legacy.as_object().unwrap().clone();
+        legacy.remove("public_base_url");
+        let restored = load_settings_from_value(Value::Object(legacy));
+        assert_eq!(restored.public_base_url, "");
+        assert_eq!(normalize_public_base_url(" https://Connect.Example.com:8443/ ").unwrap(), "https://connect.example.com:8443");
+    }
+
+    #[test]
+    fn public_url_rejects_local_or_non_base_addresses() {
+        for value in [
+            "http://connect.example.com", "https://localhost", "https://127.0.0.1",
+            "https://192.168.1.1", "https://host.local", "https://server",
+            "https://connect.example.com/mcp", "https://user:pass@connect.example.com",
+            "https://connect.example.com/?token=secret", "https://connect.example.com/#fragment",
+        ] {
+            assert!(normalize_public_base_url(value).is_err(), "accepted {value}");
+        }
     }
 
     #[test]

@@ -477,3 +477,34 @@ body { font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-ser
 .wizard-review-list { display: grid; gap: 8px; margin-top: 16px; }.wizard-review-line { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 38px; padding: 0 10px; border-bottom: 1px solid #e2e8f0; }.wizard-review-line > span:first-child { color: #475569; font-size: 11px; }.wizard-review-line code { overflow: hidden; color: #0f172a; font: 11px "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }.wizard-review-status { color: #b45309; font-size: 10px; font-weight: 700; }.wizard-review-status.ready { color: #047857; }.wizard-error { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding: 10px 12px; color: #b91c1c; border: 1px solid #fecaca; border-radius: 7px; background: #fef2f2; font-size: 11px; }.wizard-footer { display: flex; align-items: center; justify-content: space-between; padding: 16px 42px 22px; border-top: 1px solid #e2e8f0; }.wizard-footer-actions { display: flex; gap: 8px; }.wizard-footer .secondary-button { height: 40px; }.onboarding-resume { position: fixed; z-index: 5; inset: 72px 0 0 184px; display: grid; place-items: center; padding: 30px; background: #f6f8fc; }.onboarding-resume-card { width: min(540px, 100%); padding: 34px; border: 1px solid #dbe3ee; border-radius: 14px; background: #fff; box-shadow: 0 12px 32px rgba(15, 23, 42, .08); }.onboarding-resume-card h1 { margin: 8px 0; font-size: 24px; }.onboarding-resume-card p { margin: 0 0 22px; color: #64748b; font-size: 13px; line-height: 1.7; }
 @media (max-width: 900px) { .wizard-overlay, .onboarding-resume { left: 64px; padding: 18px; }.wizard-body { padding: 26px 24px; }.wizard-footer { padding: 14px 24px 18px; }.wizard-progress { padding: 14px 18px; }.wizard-step small { display: none; } }
 @media (max-width: 640px) { .wizard-overlay, .onboarding-resume { inset: 72px 0 0 0; padding: 10px; }.wizard-progress { grid-template-columns: repeat(5, minmax(45px, 1fr)); gap: 4px; overflow-x: auto; }.wizard-step { justify-content: center; }.wizard-step > div { display: none; }.wizard-step:not(:last-child)::after { display: none; }.wizard-body { min-height: 0; padding: 22px 16px; }.wizard-copy h1 { font-size: 23px; }.wizard-form-grid { grid-template-columns: 1fr; gap: 0; }.wizard-footer { align-items: stretch; flex-direction: column; gap: 10px; padding: 14px 16px 16px; }.wizard-footer-actions { justify-content: flex-end; }.wizard-footer > .secondary-button { width: 100%; }.wizard-review-line { grid-template-columns: 90px minmax(0, 1fr) auto; }.wizard-fixed-row { flex-wrap: wrap; padding: 8px 12px; }.wizard-fixed-row small { width: 100%; margin-left: 0; }.wizard-summary-line { flex-wrap: wrap; padding: 8px 12px; }.wizard-summary-line span:nth-of-type(2) { margin-left: 0; } }
+
+.public-url-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px 12px; }
+.public-url-editor .field { min-width: 0; }
+.public-url-editor .secondary-button { white-space: nowrap; }
+.public-url-editor small { grid-column: 1 / -1; color: #64748b; font-size: 11px; line-height: 1.5; }
+.doctor-view { max-width: 1160px; width: 100%; margin: 0 auto; }
+.doctor-view .view-subtitle { margin: 7px 0 0; color: #64748b; font-size: 12px; }
+.doctor-summary { display: flex; align-items: center; gap: 14px; padding: 18px 0; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; color: #1d4ed8; }
+.doctor-summary > svg { flex: none; }.doctor-summary strong, .doctor-summary span { display: block; }
+.doctor-summary strong { color: #0f172a; font-size: 15px; }.doctor-summary span { margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.5; }
+.doctor-section, .doctor-registration { margin-top: 28px; }
+.doctor-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid #cbd5e1; }
+.doctor-section-head h2 { margin: 0; font-size: 16px; }.doctor-section-head span { color: #64748b; font-size: 11px; }
+.doctor-checks { display: grid; }
+.doctor-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 14px 4px; border-bottom: 1px solid #e2e8f0; }
+.doctor-indicator { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 5px; color: #b45309; background: #fffbeb; }
+.doctor-indicator.ready { color: #047857; background: #ecfdf5; }.doctor-indicator.action { color: #b91c1c; background: #fef2f2; }
+.doctor-row-copy { min-width: 0; }.doctor-row-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.doctor-row-head strong { font-size: 12px; }.doctor-row-head code { color: #64748b; font-size: 10px; overflow-wrap: anywhere; }
+.doctor-row-copy p { margin: 5px 0 0; color: #475569; font-size: 11px; line-height: 1.5; }
+.doctor-row-copy small { display: block; margin-top: 6px; color: #64748b; font-size: 11px; line-height: 1.5; }
+.doctor-state { color: #a16207; font-size: 11px; font-weight: 700; white-space: nowrap; }.doctor-state.ready { color: #047857; }.doctor-state.action { color: #b91c1c; }
+.doctor-registration > p, .doctor-registration li { color: #475569; font-size: 12px; line-height: 1.7; }
+.doctor-registration ol { padding-left: 22px; }.doctor-registration li { margin-bottom: 6px; }
+.doctor-endpoint { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }
+.doctor-endpoint code { min-width: 0; flex: 1; overflow-wrap: anywhere; color: #1e40af; font-size: 12px; }
+.doctor-endpoint .icon-button { flex: none; background: #fff; }
+.doctor-registration .doctor-caveat { padding-top: 10px; border-top: 1px solid #e2e8f0; color: #64748b; }
+.doctor-error { padding: 12px; color: #b91c1c; background: #fef2f2; font-size: 12px; }
+@media (max-width: 900px) { .doctor-view { padding: 18px; }.doctor-section-head { flex-wrap: wrap; } }
+@media (max-width: 640px) { .public-url-editor { grid-template-columns: 1fr; }.public-url-editor .secondary-button { width: 100%; }.doctor-row { grid-template-columns: 25px minmax(0,1fr); }.doctor-state { grid-column: 2; }.doctor-view .view-heading { align-items: stretch; }.doctor-view .view-heading button { align-self: flex-start; } }
