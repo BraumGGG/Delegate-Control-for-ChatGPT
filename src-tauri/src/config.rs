@@ -56,7 +56,7 @@ fn default_router_config_path() -> String {
     app_data_root().join("router-projects.json").to_string_lossy().to_string()
 }
 
-fn bundled_mcp_executable() -> PathBuf {
+pub fn bundled_mcp_executable() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
@@ -64,6 +64,27 @@ fn bundled_mcp_executable() -> PathBuf {
         .join("runtime")
         .join("chatgpt-delegate-edit")
         .join("chatgpt-delegate-edit.exe")
+}
+
+pub fn bundled_mcp_executable_from_resource(resource_dir: &Path) -> PathBuf {
+    resource_dir
+        .join("runtime")
+        .join("chatgpt-delegate-edit")
+        .join("chatgpt-delegate-edit.exe")
+}
+
+fn uses_managed_mcp_default(path: &str) -> bool {
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    let current_default = bundled_mcp_executable().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    normalized.is_empty()
+        || normalized == current_default
+        || normalized.ends_with("\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe")
+}
+
+pub fn apply_managed_runtime_path(settings: &mut AppSettings, resource_dir: &Path) {
+    if settings.projects.is_empty() && uses_managed_mcp_default(&settings.mcp_executable) {
+        settings.mcp_executable = bundled_mcp_executable_from_resource(resource_dir).to_string_lossy().to_string();
+    }
 }
 
 fn empty_settings() -> AppSettings {
@@ -256,8 +277,15 @@ pub fn load_settings(path: &Path) -> AppSettings {
 }
 
 pub fn load_application_settings(path: &Path) -> AppSettings {
+    load_application_settings_with_resource(path, None)
+}
+
+pub fn load_application_settings_with_resource(path: &Path, resource_dir: Option<&Path>) -> AppSettings {
     let sources = legacy_settings_paths();
     let mut settings = load_settings_from_sources(path, &sources);
+    if let Some(resource_dir) = resource_dir {
+        apply_managed_runtime_path(&mut settings, resource_dir);
+    }
     let stable_root = path.parent().unwrap_or_else(|| Path::new("."));
     let stable_proxy = stable_root.join("mcp-proxy.toml").to_string_lossy().to_string();
     let stable_router = stable_root.join("router-projects.json").to_string_lossy().to_string();
@@ -711,6 +739,32 @@ mod tests {
         assert!(loaded.projects.is_empty());
         assert_eq!(loaded.active_project_id, None);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_runtime_path_uses_application_resource_dir_for_empty_setup() {
+        let mut settings = empty_settings();
+        let resource_dir = PathBuf::from(r"C:\Program Files\Delegate Control\resources");
+        apply_managed_runtime_path(&mut settings, &resource_dir);
+        assert_eq!(
+            Path::new(&settings.mcp_executable),
+            bundled_mcp_executable_from_resource(&resource_dir)
+        );
+    }
+
+    #[test]
+    fn managed_runtime_path_does_not_overwrite_custom_or_existing_project_configuration() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Delegate Control\resources");
+
+        let mut custom = empty_settings();
+        custom.mcp_executable = r"C:\Tools\custom-connector.exe".to_string();
+        apply_managed_runtime_path(&mut custom, &resource_dir);
+        assert_eq!(custom.mcp_executable, r"C:\Tools\custom-connector.exe");
+
+        let mut existing = AppSettings::default();
+        let original = existing.mcp_executable.clone();
+        apply_managed_runtime_path(&mut existing, &resource_dir);
+        assert_eq!(existing.mcp_executable, original);
     }
 
     #[test]

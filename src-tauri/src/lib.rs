@@ -4,7 +4,7 @@ mod credentials;
 mod process_manager;
 mod proxy_config;
 
-use config::{app_data_root, load_application_settings, AppSettings};
+use config::{app_data_root, apply_managed_runtime_path, load_application_settings, AppSettings};
 use process_manager::{DelegateStatus, ProcessManager};
 use std::{path::PathBuf, sync::{Arc, Mutex}};
 use tauri::Manager;
@@ -49,6 +49,12 @@ impl AppState {
         let settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
         self.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.stop_project(&settings, project_id)
     }
+
+    fn configure_resource_dir(&self, resource_dir: PathBuf) -> Result<(), String> {
+        let mut settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?;
+        apply_managed_runtime_path(&mut settings, &resource_dir);
+        Ok(())
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -85,6 +91,9 @@ pub fn run() {
             commands::open_log_directory,
         ])
         .setup(|app| {
+            let resource_dir = app.path().resource_dir().map_err(|error| format!("无法解析应用资源目录：{error}"))?;
+            app.state::<AppState>().configure_resource_dir(resource_dir)?;
+
             let open = MenuItem::with_id(app, "open", "打开控制面板", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start", "启动连接", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "停止连接", true, None::<&str>)?;

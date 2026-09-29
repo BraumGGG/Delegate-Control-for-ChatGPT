@@ -92,8 +92,14 @@ npm install
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri -- dev
-npm run tauri -- build
+npm run release:build
 ```
+
+`npm run release:build` 会先生成固定版本的 `chatgpt-delegate-edit` PyInstaller
+onedir runtime，再执行 Tauri 正式构建。安装包会把完整 runtime 放在应用资源目录的
+`runtime/chatgpt-delegate-edit/` 下；应用启动后从 Tauri `resource_dir()` 解析该路径，
+不依赖当前工作目录。普通开发构建不需要把 runtime 提交到 Git，发布构建脚本会在缺失时
+按 `scripts/build-chatgpt-delegate.ps1` 生成它。
 
 安装包输出在：
 

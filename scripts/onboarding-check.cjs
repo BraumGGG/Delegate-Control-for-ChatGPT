@@ -34,7 +34,7 @@ async function waitForServer() {
   throw new Error("Vite server did not become ready");
 }
 
-async function installMock(page) {
+async function installMock(page, readiness = ready) {
   await page.addInitScript(({ empty, readyState, initialStatus }) => {
     let callbackId = 1;
     let currentSettings = JSON.parse(localStorage.getItem("__dcfc_onboarding_settings") || "null") || structuredClone(empty);
@@ -66,7 +66,7 @@ async function installMock(page) {
         return structuredClone(currentStatus);
       },
     };
-  }, { empty: emptySettings, readyState: ready, initialStatus: status });
+  }, { empty: emptySettings, readyState: readiness, initialStatus: status });
 }
 
 (async () => {
@@ -118,7 +118,17 @@ async function installMock(page) {
     assert.equal(await page.getByText("首次运行配置").count(), 0);
 
     await context.close();
-    console.log(JSON.stringify({ status: "ok", checks: ["wizard-visible", "invalid-input", "cancel-resume", "completion", "restart-bypass", "internal-connector-integrity"] }, null, 2));
+
+    const missingContext = await browser.newContext({ viewport: { width: 1180, height: 800 } });
+    const missingPage = await missingContext.newPage();
+    await installMock(missingPage, { ...ready, mcp_available: false });
+    await missingPage.goto(appUrl, { waitUntil: "networkidle" });
+    await missingPage.getByRole("heading", { name: "运行依赖" }).waitFor();
+    assert.equal(await missingPage.getByText("未找到；请重新安装 DCFC").count(), 1);
+    assert.equal(await missingPage.getByRole("button", { name: "选择MCP Connector" }).count(), 0);
+    await missingContext.close();
+
+    console.log(JSON.stringify({ status: "ok", checks: ["wizard-visible", "invalid-input", "cancel-resume", "completion", "restart-bypass", "internal-connector-present", "internal-connector-missing"] }, null, 2));
   } finally {
     await browser.close();
     if (server && !server.killed) server.kill();

@@ -35,6 +35,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "resources": {
+      "../artifacts/build-chatgpt-delegate/chatgpt-delegate-edit": "runtime/chatgpt-delegate-edit"
+    },
     "publisher": "Delegate Control for ChatGPT",
     "copyright": "Copyright 2026 Delegate Control for ChatGPT",
     "category": "Utility",
