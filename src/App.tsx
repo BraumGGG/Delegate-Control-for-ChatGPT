@@ -285,7 +285,6 @@ function App() {
     setWizardError("");
     if (patch.magicPort !== undefined && settings) {
       setMagicProbe(null);
-      void api.detectMagicPort({ ...settings, proxy_port: patch.magicPort }).then(setMagicProbe).catch((cause) => setWizardError(String(cause)));
     }
   }
 
