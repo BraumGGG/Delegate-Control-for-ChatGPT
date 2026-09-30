@@ -6,6 +6,7 @@ export const api = {
   getRuntimeReadiness: () => invoke<RuntimeReadiness>("get_runtime_readiness"),
   checkRuntimeReadiness: (settings: AppSettings) => invoke<RuntimeReadiness>("check_runtime_readiness", { settings }),
   detectMagicPort: (settings: AppSettings) => invoke<MagicPortProbe>("detect_magic_port", { settings }),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   start: () => invoke<DelegateStatus>("start_delegate"),
   stop: () => invoke<DelegateStatus>("stop_delegate"),
   startAllProjects: () => invoke<DelegateStatus>("start_all_projects"),

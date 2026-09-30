@@ -4,7 +4,8 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 const root = path.join(__dirname, "..");
-const appUrl = "http://127.0.0.1:1420";
+const appPort = Number(process.env.ONBOARDING_PORT || 1437);
+const appUrl = `http://127.0.0.1:${appPort}`;
 const viteBin = path.join(path.dirname(require.resolve("vite/package.json", { paths: [root] })), "bin", "vite.js");
 const emptySettings = {
   proxy_host: "127.0.0.1", proxy_port: 7877, mcp_proxy_host: "127.0.0.1", mcp_proxy_port: 8100, router_port: 8101,
@@ -60,6 +61,7 @@ async function installMock(page, readiness = ready) {
           return { ...structuredClone(readyState), proxy_available: pathsReady, tunnel_available: pathsReady };
         }
         if (command === "detect_magic_port") return { host: "127.0.0.1", configured_port: 7877, listening: true, detected_port: 7877, detail: "已检测到本机代理监听 127.0.0.1:7877。" };
+        if (command === "open_external_url") { window.__openedExternalUrl = args.url; return null; }
         if (command === "get_settings") return structuredClone(currentSettings);
         if (command === "save_runtime_key") { currentStatus.credential_configured = true; return null; }
         if (command === "save_settings") {
@@ -78,7 +80,7 @@ async function installMock(page, readiness = ready) {
 (async () => {
   let server;
   if (!(await serverAvailable())) {
-    server = spawn(process.execPath, [viteBin, "--host", "127.0.0.1", "--port", "1420", "--strictPort"], {
+    server = spawn(process.execPath, [viteBin, "--host", "127.0.0.1", "--port", String(appPort), "--strictPort"], {
       cwd: root, windowsHide: true, stdio: "ignore",
     });
     await waitForServer();
@@ -89,7 +91,7 @@ async function installMock(page, readiness = ready) {
     const context = await browser.newContext({ viewport: { width: 1180, height: 800 } });
     const page = await context.newPage();
     await installMock(page);
-    await page.goto(appUrl, { waitUntil: "domcontentloaded" });
+    await page.goto(appUrl, { waitUntil: "commit", timeout: 10000 });
 
     await page.getByRole("heading", { name: "运行依赖" }).waitFor();
     assert.equal(await page.getByText("DCFC 内置运行组件").count(), 1);
@@ -100,11 +102,13 @@ async function installMock(page, readiness = ready) {
 
     await page.getByRole("button", { name: "下一步" }).click();
     await page.getByRole("heading", { name: "OpenAI 连接" }).waitFor();
-    assert.equal(await page.getByRole("link", { name: /Runtime API Keys 创建页面/ }).getAttribute("href"), "https://platform.openai.com/settings/organization/api-keys");
+    await page.getByRole("button", { name: /Runtime API Keys 创建页面/ }).click();
+    assert.equal(await page.evaluate(() => window.__openedExternalUrl), "https://platform.openai.com/settings/organization/api-keys");
     assert.equal(await page.getByText("如何创建 Runtime API Key").count(), 1);
     await page.getByRole("button", { name: "下一步" }).click();
     await page.getByText("Magic 与 Tunnel").waitFor();
-    assert.equal(await page.getByRole("link", { name: /Tunnels 管理页面/ }).getAttribute("href"), "https://platform.openai.com/settings/organization/tunnels");
+    await page.getByRole("button", { name: /Tunnels 管理页面/ }).click();
+    assert.equal(await page.evaluate(() => window.__openedExternalUrl), "https://platform.openai.com/settings/organization/tunnels");
     await page.getByRole("button", { name: "检测当前端口" }).click();
     await page.getByText("已检测到本机代理监听").waitFor();
     await page.getByRole("button", { name: "下一步" }).click();
@@ -136,7 +140,7 @@ async function installMock(page, readiness = ready) {
     const missingContext = await browser.newContext({ viewport: { width: 1180, height: 800 } });
     const missingPage = await missingContext.newPage();
     await installMock(missingPage, { ...ready, mcp_available: false });
-    await missingPage.goto(appUrl, { waitUntil: "domcontentloaded" });
+    await missingPage.goto(appUrl, { waitUntil: "commit", timeout: 10000 });
     await missingPage.getByRole("heading", { name: "运行依赖" }).waitFor();
     assert.equal(await missingPage.getByText("未找到；请重新安装 DCFC").count(), 1);
     assert.equal(await missingPage.getByText("需要处理的依赖").count(), 1);
@@ -146,7 +150,7 @@ async function installMock(page, readiness = ready) {
     const responsiveContext = await browser.newContext({ viewport: { width: 900, height: 800 } });
     const responsivePage = await responsiveContext.newPage();
     await installMock(responsivePage);
-    await responsivePage.goto(appUrl, { waitUntil: "domcontentloaded" });
+    await responsivePage.goto(appUrl, { waitUntil: "commit", timeout: 10000 });
     await responsivePage.getByRole("heading", { name: "运行依赖" }).waitFor();
     const widthCheck = await responsivePage.evaluate(() => ({ viewport: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }));
     assert.ok(widthCheck.scrollWidth <= widthCheck.viewport + 1, `responsive horizontal overflow: ${JSON.stringify(widthCheck)}`);

@@ -2,6 +2,29 @@ use crate::{config::{migrate_project_key_in_settings, normalize_public_base_url,
 use std::path::Path;
 use tauri::State;
 
+const RUNTIME_API_KEYS_URL: &str = "https://platform.openai.com/settings/organization/api-keys";
+const TUNNELS_URL: &str = "https://platform.openai.com/settings/organization/tunnels";
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if url != RUNTIME_API_KEYS_URL && url != TUNNELS_URL {
+        return Err("不允许打开未登记的外部地址。".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd.exe")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|error| format!("无法打开系统浏览器：{error}"))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = url;
+        Err("当前平台暂不支持打开系统浏览器。".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> Result<crate::process_manager::DelegateStatus, String> {
     let app_state = state.inner().clone();

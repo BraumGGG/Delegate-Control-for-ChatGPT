@@ -79,6 +79,7 @@ pub fn run() {
             commands::get_runtime_readiness,
             commands::check_runtime_readiness,
             commands::detect_magic_port,
+            commands::open_external_url,
             commands::start_delegate,
             commands::stop_delegate,
             commands::start_all_projects,
