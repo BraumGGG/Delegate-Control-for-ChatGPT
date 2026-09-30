@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, DelegateStatus, DoctorReport, LogSource, RuntimeReadiness } from "./types";
+import type { AppSettings, DelegateStatus, DoctorReport, LogSource, MagicPortProbe, RuntimeReadiness } from "./types";
 
 export const api = {
   getStatus: () => invoke<DelegateStatus>("get_status"),
   getRuntimeReadiness: () => invoke<RuntimeReadiness>("get_runtime_readiness"),
   checkRuntimeReadiness: (settings: AppSettings) => invoke<RuntimeReadiness>("check_runtime_readiness", { settings }),
+  detectMagicPort: (settings: AppSettings) => invoke<MagicPortProbe>("detect_magic_port", { settings }),
   start: () => invoke<DelegateStatus>("start_delegate"),
   stop: () => invoke<DelegateStatus>("stop_delegate"),
   startAllProjects: () => invoke<DelegateStatus>("start_all_projects"),

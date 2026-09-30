@@ -24,6 +24,11 @@ pub fn check_runtime_readiness(settings: AppSettings) -> crate::process_manager:
 }
 
 #[tauri::command]
+pub fn detect_magic_port(settings: AppSettings) -> crate::process_manager::MagicPortProbe {
+    crate::process_manager::ProcessManager::detect_magic_port(&settings)
+}
+
+#[tauri::command]
 pub async fn start_delegate(state: State<'_, AppState>) -> Result<crate::process_manager::DelegateStatus, String> {
     let app_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || app_state.start()).await.map_err(|error| format!("启动任务异常：{error}"))?

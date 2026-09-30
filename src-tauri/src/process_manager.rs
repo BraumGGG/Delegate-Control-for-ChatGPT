@@ -45,6 +45,15 @@ pub struct RuntimeReadiness {
     pub credential_configured: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MagicPortProbe {
+    pub host: String,
+    pub configured_port: u16,
+    pub listening: bool,
+    pub detected_port: Option<u16>,
+    pub detail: String,
+}
+
 struct ManagedProject { child: Child }
 
 pub struct ProcessManager {
@@ -232,6 +241,35 @@ impl ProcessManager {
             proxy_available: Path::new(&settings.proxy_executable).is_file(),
             tunnel_available: Path::new(&settings.tunnel_executable).is_file(),
             credential_configured: credentials::credential_exists(),
+        }
+    }
+
+    pub fn detect_magic_port(settings: &AppSettings) -> MagicPortProbe {
+        let compatible_port = if settings.proxy_port == 7897 { 7877 } else { 7897 };
+        if tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
+            return MagicPortProbe {
+                host: settings.proxy_host.clone(),
+                configured_port: settings.proxy_port,
+                listening: true,
+                detected_port: Some(settings.proxy_port),
+                detail: format!("已检测到本机代理监听 {}:{}。这只证明端口可连接，不代表代理出网或 Tunnel 已就绪。", settings.proxy_host, settings.proxy_port),
+            };
+        }
+        if settings.proxy_port != compatible_port && tcp_ready(&settings.proxy_host, compatible_port, 700) {
+            return MagicPortProbe {
+                host: settings.proxy_host.clone(),
+                configured_port: settings.proxy_port,
+                listening: true,
+                detected_port: Some(compatible_port),
+                detail: format!("配置端口未监听，但检测到兼容端口 {}:{}。请把 Magic 端口改为 {} 后重新检测。", settings.proxy_host, compatible_port, compatible_port),
+            };
+        }
+        MagicPortProbe {
+            host: settings.proxy_host.clone(),
+            configured_port: settings.proxy_port,
+            listening: false,
+            detected_port: None,
+            detail: format!("未检测到 {}:{} 的 Magic 监听；DCFC 不会扫描所有端口。请在 Magic 的 HTTP/混合代理设置中确认端口后填写。", settings.proxy_host, settings.proxy_port),
         }
     }
 
@@ -754,6 +792,35 @@ mod tests {
         let error = detect_clash_port_with_legacy(&settings, legacy_port).unwrap_err();
         assert!(error.contains(&configured_port.to_string()));
         assert!(error.contains(&legacy_port.to_string()));
+    }
+
+    #[test]
+    fn magic_port_probe_reports_configured_listener_without_claiming_network_readiness() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut settings = AppSettings::default();
+        settings.proxy_port = port;
+
+        let probe = ProcessManager::detect_magic_port(&settings);
+
+        assert!(probe.listening);
+        assert_eq!(probe.detected_port, Some(port));
+        assert!(probe.detail.contains("不代表代理出网"));
+    }
+
+    #[test]
+    fn magic_port_probe_reports_missing_listener_and_does_not_mutate_settings() {
+        let configured = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let configured_port = configured.local_addr().unwrap().port();
+        drop(configured);
+        let mut settings = AppSettings::default();
+        settings.proxy_port = configured_port;
+
+        let probe = ProcessManager::detect_magic_port(&settings);
+
+        assert!(!probe.listening);
+        assert_eq!(probe.detected_port, None);
+        assert_eq!(settings.proxy_port, configured_port);
     }
 
     fn connector_call(python: &str, project_id: &str) {

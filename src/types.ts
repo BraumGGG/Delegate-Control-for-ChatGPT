@@ -64,6 +64,14 @@ export interface RuntimeReadiness {
   credential_configured: boolean;
 }
 
+export interface MagicPortProbe {
+  host: string;
+  configured_port: number;
+  listening: boolean;
+  detected_port: number | null;
+  detail: string;
+}
+
 export interface DoctorCheck {
   id: string;
   label: string;
