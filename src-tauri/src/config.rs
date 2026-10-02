@@ -75,6 +75,20 @@ pub fn bundled_mcp_executable_from_resource(resource_dir: &Path) -> PathBuf {
         .join("chatgpt-delegate-edit.exe")
 }
 
+pub fn bundled_mcp_proxy_executable() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_default()
+        .join("runtime")
+        .join("mcp-proxy")
+        .join("mcp-proxy.exe")
+}
+
+pub fn bundled_mcp_proxy_executable_from_resource(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("runtime").join("mcp-proxy").join("mcp-proxy.exe")
+}
+
 fn uses_managed_mcp_default(path: &str) -> bool {
     let normalized = path.replace('/', "\\").to_ascii_lowercase();
     let current_default = bundled_mcp_executable().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
@@ -83,9 +97,28 @@ fn uses_managed_mcp_default(path: &str) -> bool {
         || normalized.ends_with("\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe")
 }
 
+fn uses_managed_mcp_proxy_default(path: &str) -> bool {
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    let current_default = bundled_mcp_proxy_executable().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let legacy_default = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
+        .join(".local").join("bin").join("mcp-proxy.exe")
+        .to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    normalized.is_empty()
+        || normalized == current_default
+        || normalized == legacy_default
+        || normalized.ends_with("\\runtime\\mcp-proxy\\mcp-proxy.exe")
+}
+
+pub fn is_managed_mcp_proxy_path(path: &str) -> bool {
+    path.replace('/', "\\").to_ascii_lowercase().ends_with("\\runtime\\mcp-proxy\\mcp-proxy.exe")
+}
+
 pub fn apply_managed_runtime_path(settings: &mut AppSettings, resource_dir: &Path) {
     if settings.projects.is_empty() && uses_managed_mcp_default(&settings.mcp_executable) {
         settings.mcp_executable = bundled_mcp_executable_from_resource(resource_dir).to_string_lossy().to_string();
+    }
+    if uses_managed_mcp_proxy_default(&settings.proxy_executable) {
+        settings.proxy_executable = bundled_mcp_proxy_executable_from_resource(resource_dir).to_string_lossy().to_string();
     }
 }
 
@@ -95,6 +128,7 @@ fn empty_settings() -> AppSettings {
     settings.active_project_id = None;
     settings.profile_name.clear();
     settings.mcp_executable = bundled_mcp_executable().to_string_lossy().to_string();
+    settings.proxy_executable = bundled_mcp_proxy_executable().to_string_lossy().to_string();
     settings
 }
 
@@ -811,6 +845,20 @@ mod tests {
         let original = existing.mcp_executable.clone();
         apply_managed_runtime_path(&mut existing, &resource_dir);
         assert_eq!(existing.mcp_executable, original);
+    }
+
+    #[test]
+    fn managed_proxy_path_uses_application_resource_dir_without_overwriting_custom_path() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Delegate Control\resources");
+
+        let mut managed = AppSettings::default();
+        apply_managed_runtime_path(&mut managed, &resource_dir);
+        assert_eq!(Path::new(&managed.proxy_executable), bundled_mcp_proxy_executable_from_resource(&resource_dir));
+
+        let mut custom = AppSettings::default();
+        custom.proxy_executable = r"C:\Tools\custom-mcp-proxy.exe".to_string();
+        apply_managed_runtime_path(&mut custom, &resource_dir);
+        assert_eq!(custom.proxy_executable, r"C:\Tools\custom-mcp-proxy.exe");
     }
 
     #[test]

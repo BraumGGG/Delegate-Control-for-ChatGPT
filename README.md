@@ -75,23 +75,20 @@ delete_text_from_file
 
 - Windows 10/11 x64
 - 一个本地 Magic HTTP 代理；在“连接设置”中填写其实际监听端口
-- `mcp-proxy.exe`：从 `joshrotenberg/mcp-proxy` 官方 Release 单独获取；Gate A 验证版本为 v0.4.3
+- `mcp-proxy.exe`：DCFC 安装包内置并固定为 `joshrotenberg/mcp-proxy` v0.4.3；安装完整性会校验 SHA-256，用户无需单独下载或复制
 - `tunnel-client.exe`：从 `openai/tunnel-client` 官方 Release 单独获取；Gate A 验证版本为 v0.0.14
 - `chatgpt-delegate-edit.exe`：DCFC 安装包的内置运行组件；如果安装目录缺少该文件，首次运行会提示安装完整性异常，而不会要求普通用户手工选择 Connector 路径
 
-Gate A 的安装包不打包或下载两个外部 exe。下载后请将它们放在本机自选目录；
-首次运行向导会让用户指定 MCP Proxy 与 Tunnel Client 路径。内置 Connector 由 DCFC
-安装完整性负责，不属于普通用户的运行依赖配置。
+Gate D1 起，安装包会把 MCP Proxy 与许可证文件放入安装资源目录，并在启动时解析为受管路径；缺失或损坏时 Setup Doctor/首次运行向导会明确提示重新安装。Tunnel Client 仍由用户提供，首次运行向导会让用户选择其实际路径。内置 Connector 由 DCFC 安装完整性负责，不属于普通用户的运行依赖配置。
 
 默认程序路径：
 
 ```text
 %USERPROFILE%\.local\bin\chatgpt-delegate.exe
-%USERPROFILE%\.local\bin\mcp-proxy.exe
 %USERPROFILE%\.local\bin\tunnel-client.exe
 ```
 
-如果 `mcp-proxy.exe` 不在默认路径，可在“设置 → 本机程序”中选择它。启动前 DCFC 会检查所有外部程序是否存在。
+如需使用受信任的自定义 `mcp-proxy.exe`，可在“设置 → 本机程序”中明确选择；默认安装路径不会从 PATH 或其他无关目录回退。启动前 DCFC 会检查所有运行程序是否存在。
 
 DCFC 会在启动前检查内置 Connector 是否存在，并显示文件编辑能力状态；如果安装目录缺少内置组件，应重新安装 DCFC。用户无需在设置中选择 Connector 路径。
 

@@ -1,5 +1,5 @@
 use crate::{
-    config::{normalize_public_base_url, AppSettings},
+    config::{is_managed_mcp_proxy_path, normalize_public_base_url, AppSettings},
     process_manager::{DelegateStatus, OverallState},
 };
 use serde::Serialize;
@@ -160,10 +160,18 @@ fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<St
 
     let proxy_exists = Path::new(&settings.proxy_executable).is_file();
     let tunnel_exists = Path::new(&settings.tunnel_executable).is_file();
+    let managed_proxy = is_managed_mcp_proxy_path(&settings.proxy_executable);
+    checks.push(check("managed_mcp_proxy", "DCFC 内置 MCP Proxy", "shared", None,
+        if proxy_exists { Ready } else { Action },
+        if proxy_exists && managed_proxy { "安装包内置 MCP Proxy 可用。" } else if !proxy_exists && managed_proxy { "安装包内置 MCP Proxy 缺失或损坏。" } else if proxy_exists { "当前使用自定义 MCP Proxy 路径。" } else { "自定义 MCP Proxy 路径不存在。" },
+        if managed_proxy { "重新安装 DCFC 以恢复内置 MCP Proxy；不要从 PATH 复制任意程序。" } else { "在连接设置中指定实际存在且受信任的 MCP Proxy。" }));
     checks.push(check("dependencies", "外部运行依赖", "shared", None,
         if proxy_exists && tunnel_exists { Ready } else { Action },
-        if proxy_exists && tunnel_exists { "MCP Proxy 与 Tunnel Client 路径可用。" } else { "MCP Proxy 或 Tunnel Client 不存在。" },
-        "在连接设置中指定由用户提供的 MCP Proxy 与 Tunnel Client。"));
+        if proxy_exists && tunnel_exists { if managed_proxy { "内置 MCP Proxy 与 Tunnel Client 均可用。" } else { "自定义 MCP Proxy 与 Tunnel Client 路径可用。" } }
+        else if !proxy_exists && managed_proxy { "内置 MCP Proxy 不存在。" }
+        else if !proxy_exists { "MCP Proxy 不存在。" }
+        else { "Tunnel Client 不存在。" },
+        if !proxy_exists && managed_proxy { "重新安装 DCFC 以恢复内置 MCP Proxy。" } else { "在连接设置中指定实际存在的运行依赖。" }));
 
     let magic_config_valid = settings.proxy_host == "127.0.0.1" && settings.proxy_port > 0;
     checks.push(check("magic", "Magic 本机代理", "shared", None,
@@ -315,7 +323,7 @@ mod tests {
         status.router_ready = false;
         status.router_pid = Some(2);
         let report = evaluate(&settings, &status, None, None);
-        for id in ["managed_runtime", "dependencies", "magic", "tunnel_configuration", "router"] {
+        for id in ["managed_runtime", "managed_mcp_proxy", "dependencies", "magic", "tunnel_configuration", "router"] {
             assert_eq!(state(&report, id), CheckState::Action, "{id}");
         }
         assert!(!report.local_ready);

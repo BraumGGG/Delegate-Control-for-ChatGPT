@@ -36,7 +36,8 @@
     "active": true,
     "targets": ["nsis", "msi"],
     "resources": {
-      "../artifacts/build-chatgpt-delegate/chatgpt-delegate-edit": "runtime/chatgpt-delegate-edit"
+      "../artifacts/build-chatgpt-delegate/chatgpt-delegate-edit": "runtime/chatgpt-delegate-edit",
+      "../artifacts/build-mcp-proxy": "runtime/mcp-proxy"
     },
     "publisher": "Delegate Control for ChatGPT",
     "copyright": "Copyright 2026 Delegate Control for ChatGPT",

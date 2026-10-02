@@ -15,10 +15,14 @@ if (-not (Test-Path $runtimeExe)) {
     throw "Managed Connector runtime was not produced: $runtimeExe"
 }
 
+& (Join-Path $PSScriptRoot "fetch-mcp-proxy.ps1")
+
 Push-Location $root
 try {
     & npm.cmd run check:managed-runtime
     if ($LASTEXITCODE -ne 0) { throw "Managed runtime integrity check failed." }
+    & npm.cmd run check:managed-proxy
+    if ($LASTEXITCODE -ne 0) { throw "Managed MCP Proxy integrity check failed." }
     & npm.cmd run tauri -- build
     if ($LASTEXITCODE -ne 0) { throw "Tauri production build failed." }
 }
