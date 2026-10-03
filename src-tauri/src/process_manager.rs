@@ -397,6 +397,13 @@ impl ProcessManager {
             let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未出现 Router 启动完成标记", WaitResult::Ready => unreachable!() };
             return Err(format!("Router MCP 未能就绪：{}。请查看 Router 日志。当前程序：{}", reason, settings.mcp_executable));
         }
+        // FastMCP writes its startup marker just before the Uvicorn socket is
+        // observable on Windows. Do not let the proxy race the listener and
+        // turn a transient 502 into a misleading "Proxy 未能就绪" failure.
+        if !wait_for_tcp(&settings.mcp_proxy_host, settings.router_port, Duration::from_secs(10), &mut router) {
+            terminate_child(&mut router);
+            return Err(format!("Router MCP 已报告启动但端口 {}:{} 仍不可连接。请查看 Router 日志。", settings.mcp_proxy_host, settings.router_port));
+        }
         self.router = Some(router);
         let proxy_stderr_path = self.log_dir.join("proxy.stderr.log");
         let proxy_stderr_offset = log_offset(&proxy_stderr_path);
@@ -534,6 +541,15 @@ fn detect_clash_port_with_legacy(settings: &AppSettings, legacy_port: u16) -> Re
     Err(format!("Magic 代理未就绪：{}:{}。请先启动本机代理后重试。", settings.proxy_host, settings.proxy_port))
 }
 fn tcp_ready(host: &str, port: u16, timeout_ms: u64) -> bool { let address = format!("{host}:{port}"); address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()).is_some_and(|socket| TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).is_ok()) }
+fn wait_for_tcp(host: &str, port: u16, timeout: Duration, child: &mut Child) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if tcp_ready(host, port, 250) { return true; }
+        if child.try_wait().ok().flatten().is_some() { return false; }
+        thread::sleep(Duration::from_millis(100));
+    }
+    tcp_ready(host, port, 250)
+}
 fn http_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
     http_probe(host, port, "/readyz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
         || http_probe(host, port, "/healthz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
@@ -655,6 +671,16 @@ mod tests {
         assert!(!log_contains_marker(&path, 0, b"Proxy ready listen="));
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn tcp_readiness_wait_stops_when_router_exits_before_binding() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "exit 1"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("test child should start");
+        assert!(!wait_for_tcp("127.0.0.1", 59999, Duration::from_secs(2), &mut child));
     }
 
     #[test]
