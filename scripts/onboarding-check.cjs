@@ -8,10 +8,11 @@ const appPort = Number(process.env.ONBOARDING_PORT || 1437);
 const appUrl = `http://127.0.0.1:${appPort}`;
 const viteBin = path.join(path.dirname(require.resolve("vite/package.json", { paths: [root] })), "bin", "vite.js");
 const emptySettings = {
+  network_mode: "magic",
   proxy_host: "127.0.0.1", proxy_port: 7877, mcp_proxy_host: "127.0.0.1", mcp_proxy_port: 8100, router_port: 8101,
   health_host: "127.0.0.1", health_port: 8080, profile_name: "", tunnel_id: "",
   mcp_executable: "C:\\Program Files\\DCFC\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe",
-  proxy_executable: "C:\\Missing\\mcp-proxy.exe", tunnel_executable: "C:\\Missing\\tunnel-client.exe",
+  proxy_executable: "C:\\Program Files\\DCFC\\runtime\\mcp-proxy\\mcp-proxy.exe", tunnel_executable: "C:\\Tools\\tunnel-client.exe",
   proxy_config_path: "C:\\Users\\Test\\.delegate-control\\mcp-proxy.toml",
   router_config_path: "C:\\Users\\Test\\.delegate-control\\router-projects.json",
   projects: [], active_project_id: null,
@@ -97,7 +98,6 @@ async function installMock(page, readiness = ready) {
     assert.equal(await page.getByText("DCFC 内置运行组件").count(), 1);
     assert.equal(await page.getByRole("button", { name: "选择MCP Connector" }).count(), 0);
 
-    await page.getByLabel("MCP Proxy路径").fill("C:\\Tools\\mcp-proxy.exe");
     await page.getByLabel("Tunnel Client路径").fill("C:\\Tools\\tunnel-client.exe");
 
     await page.getByRole("button", { name: "下一步" }).click();
@@ -106,9 +106,12 @@ async function installMock(page, readiness = ready) {
     assert.equal(await page.evaluate(() => window.__openedExternalUrl), "https://platform.openai.com/settings/organization/api-keys");
     assert.equal(await page.getByText("如何创建 Runtime API Key").count(), 1);
     await page.getByRole("button", { name: "下一步" }).click();
-    await page.getByText("Magic 与 Tunnel").waitFor();
+    await page.getByText("网络模式与 Tunnel").waitFor();
     await page.getByRole("button", { name: /Tunnels 管理页面/ }).click();
     assert.equal(await page.evaluate(() => window.__openedExternalUrl), "https://platform.openai.com/settings/organization/tunnels");
+    await page.getByRole("button", { name: "Direct" }).click();
+    assert.equal(await page.getByLabel("Magic 端口").count(), 0);
+    await page.getByRole("button", { name: "Magic" }).click();
     await page.getByRole("button", { name: "检测当前端口" }).click();
     await page.getByText("已检测到本机代理监听").waitFor();
     await page.getByRole("button", { name: "下一步" }).click();
@@ -117,7 +120,7 @@ async function installMock(page, readiness = ready) {
     await page.getByRole("button", { name: "稍后配置" }).first().click();
     await page.getByText("完成本机配置后再开始连接").waitFor();
     await page.getByRole("button", { name: "继续配置" }).click();
-    await page.getByText("Magic 与 Tunnel").waitFor();
+    await page.getByText("网络模式与 Tunnel").waitFor();
 
     await page.getByLabel("Tunnel ID").fill("tunnel_demo_01");
     await page.getByRole("button", { name: "下一步" }).click();

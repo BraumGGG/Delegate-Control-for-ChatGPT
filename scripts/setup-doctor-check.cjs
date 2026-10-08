@@ -26,11 +26,12 @@ async function installMock(page) {
       mcp_host: "127.0.0.1", mcp_port: 8000 + index, enabled: true,
     }));
     const settings = {
+      network_mode: "magic",
       proxy_host: "127.0.0.1", proxy_port: 7877, mcp_proxy_host: "127.0.0.1",
       mcp_proxy_port: 8100, router_port: 8101, health_host: "127.0.0.1", health_port: 8080,
-      profile_name: "", tunnel_id: "tunnel-a", public_base_url: "",
+      profile_name: "", tunnel_id: "tunnel-a", public_base_url: "https://dcfc.example.com",
       mcp_executable: "C:\\DCFC\\runtime\\chatgpt-delegate-edit.exe",
-      proxy_executable: "C:\\tools\\mcp-proxy.exe", proxy_config_path: "C:\\DCFC\\proxy.toml",
+      proxy_executable: "C:\\DCFC\\runtime\\mcp-proxy\\mcp-proxy.exe", proxy_config_path: "C:\\DCFC\\proxy.toml",
       router_config_path: "C:\\DCFC\\router.json", tunnel_executable: "C:\\tools\\tunnel-client.exe",
       projects, active_project_id: "project-0",
     };
@@ -63,11 +64,6 @@ async function installMock(page) {
           `project:${project.id}`, project.name, "project", index === 3 ? "action" : "ready",
           index === 3 ? "该项目 MCP 失败" : "项目 MCP 已就绪", project.id,
         )),
-        row("public_url", "Public URL 地址格式", "registration",
-          settings.public_base_url ? "ready" : "pending", settings.public_base_url ? "有效" : "尚未填写"),
-        row("public_reachability", "公网地址可达性", "registration", "pending", "等待检查"),
-        row("endpoint", "DCFC MCP 端点", "registration", "pending", "等待检查"),
-        row("registration", "ChatGPT 注册准备", "registration", "pending", "由用户注册"),
       ],
     });
     window.__dcfcTestCalls = [];
@@ -117,16 +113,11 @@ async function installMock(page) {
       assert.equal(await page.locator(".doctor-section").filter({ hasText: "项目运行" }).locator(".doctor-row").count(), 12);
       assert.equal(await page.getByText("该项目 MCP 失败").count(), 1);
       assert.equal(await page.getByText("本机连接已就绪").count(), 1);
-      assert.equal(await page.locator(".doctor-row").filter({ hasText: "尚未填写" }).count(), 1);
-      await page.getByRole("button", { name: "设置 Public URL" }).click();
-      await page.getByLabel("Public URL / 公网地址").fill("https://dcfc.example.com/");
-      await page.getByRole("button", { name: "保存地址" }).click();
-      await page.getByText("Public URL 已保存").waitFor();
-      await page.getByRole("button", { name: "安装诊断" }).click();
+      assert.equal(await page.locator(".doctor-row").filter({ hasText: "尚未填写" }).count(), 0);
       await page.getByText("https://dcfc.example.com/").waitFor();
-      await page.getByRole("heading", { name: "在 ChatGPT 中注册" }).scrollIntoViewIfNeeded();
-      assert.equal(await page.locator(".doctor-registration li").count(), 3);
-      assert.match(await page.locator(".doctor-caveat").innerText(), /不等于从 ChatGPT 网络完成端到端调用/);
+      await page.getByText("仅供外部 Connector 使用").scrollIntoViewIfNeeded();
+      assert.match(await page.locator(".doctor-registration").innerText(), /不会影响本机启动/);
+      assert.equal(await page.locator(".doctor-row").filter({ hasText: "公网" }).count(), 0);
       const evidence = path.join(root, "artifacts", "gate-c");
       fs.mkdirSync(evidence, { recursive: true });
       await page.screenshot({ path: path.join(evidence, `setup-doctor-${width}.png`), fullPage: true });
@@ -137,7 +128,7 @@ async function installMock(page) {
       await page.getByRole("button", { name: "重新检查" }).click();
       await page.getByRole("alert").filter({ hasText: "诊断服务暂不可用" }).waitFor({ state: "hidden" });
       const calls = await page.evaluate(() => window.__dcfcTestCalls);
-      assert.equal(calls.filter((command) => command === "save_public_base_url").length, 1);
+      assert.equal(calls.filter((command) => command === "save_public_base_url").length, 0);
       assert.equal(calls.filter((command) => command.includes("stop") || command.includes("start")).length, 0);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
       assert.equal(overflow, false, `${width}px horizontal overflow`);

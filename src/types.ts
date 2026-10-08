@@ -10,6 +10,7 @@ export interface ProjectConfig {
 }
 
 export interface AppSettings {
+  network_mode: "direct" | "magic";
   proxy_host: string;
   proxy_port: number;
   mcp_proxy_host: string;
@@ -90,4 +91,4 @@ export interface DoctorReport {
 }
 
 export type ViewId = "overview" | "projects" | "logs" | "settings" | "doctor";
-export type LogSource = "mcp" | "router" | "proxy" | "tunnel";
+export type LogSource = "startup" | "mcp" | "router" | "proxy" | "tunnel";

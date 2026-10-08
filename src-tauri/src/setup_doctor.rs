@@ -3,7 +3,7 @@ use crate::{
     process_manager::{DelegateStatus, OverallState},
 };
 use serde::Serialize;
-use std::{net::{IpAddr, ToSocketAddrs}, os::windows::process::CommandExt, path::Path, process::Command};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -28,14 +28,6 @@ pub struct DoctorReport {
     pub registration_ready: bool,
 }
 
-#[derive(Default)]
-struct PublicProbe {
-    base_status: Option<u16>,
-    endpoint_status: Option<u16>,
-    endpoint_valid: bool,
-    error: Option<String>,
-}
-
 fn check(id: &str, label: &str, scope: &str, project_id: Option<&str>, state: CheckState, detail: &str, action: &str) -> DoctorCheck {
     DoctorCheck {
         id: id.to_string(), label: label.to_string(), scope: scope.to_string(),
@@ -47,98 +39,10 @@ pub fn diagnose(settings: &AppSettings, status: &DelegateStatus) -> DoctorReport
     let endpoint = normalize_public_base_url(&settings.public_base_url).ok()
         .filter(|_| !settings.public_base_url.trim().is_empty())
         .map(|base| format!("{base}/"));
-    let probe = endpoint.as_deref().map(probe_public_endpoint);
-    evaluate(settings, status, endpoint, probe.as_ref())
+    evaluate(settings, status, endpoint)
 }
 
-fn probe_public_endpoint(endpoint: &str) -> PublicProbe {
-    let mut probe = PublicProbe::default();
-    let parsed = match url::Url::parse(endpoint) {
-        Ok(parsed) => parsed,
-        Err(_) => { probe.error = Some("Public URL 无效。".to_string()); return probe; }
-    };
-    let host = parsed.host_str().unwrap_or_default();
-    let port = parsed.port_or_known_default().unwrap_or(443);
-    let addresses = match (host, port).to_socket_addrs() {
-        Ok(addresses) => addresses.collect::<Vec<_>>(),
-        Err(_) => { probe.error = Some("Public URL 域名无法解析。".to_string()); return probe; }
-    };
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
-        probe.error = Some("Public URL 解析到本机、私网或保留地址，已停止公网探测。".to_string());
-        return probe;
-    }
-    let pinned_ip = match addresses[0].ip() {
-        IpAddr::V4(ip) => ip.to_string(),
-        IpAddr::V6(ip) => format!("[{ip}]"),
-    };
-    let resolve = format!("{host}:{port}:{pinned_ip}");
-    let curl = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string())
-        + r"\System32\curl.exe";
-    let base = Command::new(&curl)
-        .args(["-q", "--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--proto", "=https",
-            "--resolve", &resolve, "--head", "--output", "NUL", "--write-out", "%{http_code}", endpoint])
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output();
-    match base {
-        Ok(output) if output.status.success() => {
-            probe.base_status = String::from_utf8_lossy(&output.stdout).parse::<u16>().ok();
-        }
-        _ => probe.error = Some("HEAD 检查未完成；继续检测 MCP 根路由。".to_string()),
-    }
-    let body = r#"{"jsonrpc":"2.0","id":"dcfc-doctor","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"dcfc-setup-doctor","version":"0.1.0"}}}"#;
-    let response = Command::new(&curl)
-        .args(["-q", "--silent", "--show-error", "--noproxy", "*", "--connect-timeout", "3", "--max-time", "5", "--max-filesize", "16384",
-            "--proto", "=https", "--resolve", &resolve, "--header", "Content-Type: application/json",
-            "--header", "Accept: application/json, text/event-stream",
-            "--header", "MCP-Protocol-Version: 2025-06-18",
-            "--data-raw", body, "--write-out", "\nDCFC_HTTP_STATUS:%{http_code}", endpoint])
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output();
-    match response {
-        Ok(output) => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some((content, status)) = text.rsplit_once("\nDCFC_HTTP_STATUS:") {
-                probe.endpoint_status = status.parse::<u16>().ok();
-                probe.endpoint_valid = probe.endpoint_status.is_some_and(|code| (200..300).contains(&code))
-                    && is_mcp_initialize_response(content);
-                if probe.base_status.is_none() { probe.base_status = probe.endpoint_status; }
-            }
-            if probe.base_status.is_none() { probe.error = Some("从本机无法访问 Public URL；检查 TLS 与 Tunnel 公网映射。".to_string()); }
-        }
-        _ => probe.error = Some("公网地址有响应，但 MCP 初始化检查失败。".to_string()),
-    }
-    probe
-}
-
-fn is_mcp_initialize_response(content: &str) -> bool {
-    let valid = |value: &str| serde_json::from_str::<serde_json::Value>(value).ok()
-        .is_some_and(|json| json.get("jsonrpc").and_then(|value| value.as_str()) == Some("2.0")
-            && json.pointer("/result/protocolVersion").and_then(|value| value.as_str()).is_some()
-            && json.pointer("/result/serverInfo/name").and_then(|value| value.as_str()).is_some());
-    valid(content) || content.lines().filter_map(|line| line.strip_prefix("data:")).any(|value| valid(value.trim()))
-}
-
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            !ip.is_private() && !ip.is_loopback() && !ip.is_link_local()
-                && !ip.is_broadcast() && !ip.is_documentation() && !ip.is_multicast()
-                && !ip.is_unspecified() && octets[0] != 0 && octets[0] < 224
-                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
-                && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
-        }
-        IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() { return public_ip(IpAddr::V4(mapped)); }
-            !ip.is_loopback() && !ip.is_unspecified() && !ip.is_unique_local()
-                && !ip.is_unicast_link_local() && !ip.is_multicast()
-                && (ip.segments()[0] & 0xe000) == 0x2000
-                && !(ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
-        }
-    }
-}
-
-fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<String>, probe: Option<&PublicProbe>) -> DoctorReport {
+fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<String>) -> DoctorReport {
     use CheckState::{Action, Pending, Ready};
     let mut checks = Vec::new();
     let mut local_settings = settings.clone();
@@ -162,22 +66,23 @@ fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<St
     let tunnel_exists = Path::new(&settings.tunnel_executable).is_file();
     let managed_proxy = is_managed_mcp_proxy_path(&settings.proxy_executable);
     checks.push(check("managed_mcp_proxy", "DCFC 内置 MCP Proxy", "shared", None,
-        if proxy_exists { Ready } else { Action },
-        if proxy_exists && managed_proxy { "安装包内置 MCP Proxy 可用。" } else if !proxy_exists && managed_proxy { "安装包内置 MCP Proxy 缺失或损坏。" } else if proxy_exists { "当前使用自定义 MCP Proxy 路径。" } else { "自定义 MCP Proxy 路径不存在。" },
-        if managed_proxy { "重新安装 DCFC 以恢复内置 MCP Proxy；不要从 PATH 复制任意程序。" } else { "在连接设置中指定实际存在且受信任的 MCP Proxy。" }));
+        if proxy_exists && managed_proxy { Ready } else { Action },
+        if proxy_exists && managed_proxy { "安装包内置 MCP Proxy 可用。" } else if !proxy_exists && managed_proxy { "安装包内置 MCP Proxy 缺失或损坏。" } else { "当前不是安装包内置 MCP Proxy；请重新安装 DCFC。" },
+        "重新安装 DCFC 以恢复内置 MCP Proxy；普通用户不需要配置 Proxy 路径。"));
     checks.push(check("dependencies", "外部运行依赖", "shared", None,
         if proxy_exists && tunnel_exists { Ready } else { Action },
-        if proxy_exists && tunnel_exists { if managed_proxy { "内置 MCP Proxy 与 Tunnel Client 均可用。" } else { "自定义 MCP Proxy 与 Tunnel Client 路径可用。" } }
+        if proxy_exists && tunnel_exists && managed_proxy { "内置 MCP Proxy 与 Tunnel Client 均可用。" }
         else if !proxy_exists && managed_proxy { "内置 MCP Proxy 不存在。" }
+        else if !managed_proxy { "MCP Proxy 不是安装包内置组件。" }
         else if !proxy_exists { "MCP Proxy 不存在。" }
         else { "Tunnel Client 不存在。" },
-        if !proxy_exists && managed_proxy { "重新安装 DCFC 以恢复内置 MCP Proxy。" } else { "在连接设置中指定实际存在的运行依赖。" }));
+        "重新安装 DCFC 或选择实际存在的 Tunnel Client。"));
 
-    let magic_config_valid = settings.proxy_host == "127.0.0.1" && settings.proxy_port > 0;
+    let magic_config_valid = settings.network_mode == crate::config::NetworkMode::Direct || (settings.proxy_host == "127.0.0.1" && settings.proxy_port > 0);
     checks.push(check("magic", "Magic 本机代理", "shared", None,
-        if !magic_config_valid { Action } else if status.proxy_ready { Ready } else { Action },
-        if !magic_config_valid { "Magic 必须配置为 127.0.0.1 和有效端口。" } else if status.proxy_ready { "Magic 监听已就绪。" } else { "配置的 Magic 代理未就绪。" },
-        "启动 Magic，并确认连接设置中的本机监听端口。"));
+        if settings.network_mode == crate::config::NetworkMode::Direct { Ready } else if !magic_config_valid { Action } else if status.proxy_ready { Ready } else { Action },
+        if settings.network_mode == crate::config::NetworkMode::Direct { "Direct 模式已启用，不依赖 Magic 端口。" } else if !magic_config_valid { "Magic 必须配置为 127.0.0.1 和有效端口。" } else if status.proxy_ready { "Magic 监听已就绪。" } else { "配置的 Magic 代理未就绪。" },
+        if settings.network_mode == crate::config::NetworkMode::Direct { "无需配置 Magic。" } else { "启动 Magic，并确认连接设置中的本机监听端口。" }));
 
     let tunnel_configured = status.credential_configured && (!settings.tunnel_id.trim().is_empty() || !settings.profile_name.trim().is_empty());
     checks.push(check("tunnel_configuration", "Tunnel 配置", "shared", None,
@@ -208,34 +113,8 @@ fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<St
             "只检查该项目的进程、端口与项目 MCP 日志；不停止其他项目。"));
     }
 
-    let url_state = if settings.public_base_url.trim().is_empty() { Pending } else if endpoint.is_some() { Ready } else { Action };
-    checks.push(check("public_url", "Public URL 地址格式", "registration", None, url_state,
-        if url_state == Ready { "HTTPS 公网域名有效，已归一化为根路由地址。" } else if url_state == Pending { "Public URL 尚未填写；本地运行不受影响。" } else { "Public URL 不是有效的 HTTPS 公网基础地址。" },
-        "在连接设置中填写 HTTPS 公网基础地址，不添加 /mcp、查询参数或本机地址。"));
-    let reachability = probe.map(|probe| probe.base_status.is_some()).unwrap_or(false);
-    checks.push(check("public_reachability", "公网地址可达性", "registration", None,
-        if reachability { Ready } else if probe.is_some() { Action } else { Pending },
-        if reachability { "本机 HTTPS 请求收到公网地址响应；这不证明 ChatGPT 可达。" } else if let Some(probe) = probe { probe.error.as_deref().unwrap_or("公网地址无响应。") } else { "等待有效 Public URL。" },
-        "检查域名、TLS 证书与 Tunnel 映射；必要时从外部网络再验证。"));
-    let endpoint_valid = probe.is_some_and(|probe| probe.endpoint_valid);
-    let endpoint_detail = match probe {
-        Some(probe) if probe.endpoint_valid => "派生的 Proxy 根路由返回 MCP initialize 响应。",
-        Some(probe) if matches!(probe.endpoint_status, Some(401 | 403)) => "端点要求认证；未传送凭据，无法确认 MCP 协议。",
-        Some(probe) if probe.endpoint_status.is_some() => "公网地址有响应，但派生根路由未返回有效 MCP initialize。",
-        Some(_) => "未能验证 MCP 根路由。",
-        None => "等待有效 Public URL。",
-    };
-    checks.push(check("endpoint", "DCFC MCP 端点", "registration", None,
-        if endpoint_valid { Ready } else if probe.is_some() { Action } else { Pending }, endpoint_detail,
-        "确认 Tunnel 指向当前 MCP Proxy 根路由，不要使用项目后端的 /mcp 地址。"));
-
     let local_ready = checks.iter().filter(|item| item.scope == "shared").all(|item| item.state == Ready) && running_projects > 0;
-    let registration_ready = local_ready && endpoint_valid;
-    checks.push(check("registration", "ChatGPT 注册准备", "registration", None,
-        if registration_ready { Ready } else { Pending },
-        if registration_ready { "本机与端点检查通过；ChatGPT 中的注册仍需用户完成。" } else { "先处理上述未就绪项；DCFC 不会代替 ChatGPT 注册或刷新工具。" },
-        "在 ChatGPT 中使用下方端点创建应用；工具变化时在 ChatGPT 中按其界面重新同步。"));
-    DoctorReport { checks, registration_endpoint: endpoint, local_ready, registration_ready }
+    DoctorReport { checks, registration_endpoint: endpoint, local_ready, registration_ready: false }
 }
 
 #[cfg(test)]
@@ -275,11 +154,9 @@ mod tests {
         let (mut settings, status) = fixture();
         let path = std::env::current_exe().unwrap();
         settings.mcp_executable = path.to_string_lossy().to_string();
-        settings.proxy_executable = settings.mcp_executable.clone();
+        settings.proxy_executable = crate::config::bundled_mcp_proxy_executable().to_string_lossy().to_string();
         settings.tunnel_executable = settings.mcp_executable.clone();
-        let probe = PublicProbe { base_status: Some(405), endpoint_status: Some(200), endpoint_valid: true, error: None };
-        let report = evaluate(&settings, &status, Some("https://dcfc.example.com/".to_string()), Some(&probe));
-        assert!(report.local_ready && report.registration_ready);
+        let report = evaluate(&settings, &status, Some("https://dcfc.example.com/".to_string()));
         assert_eq!(report.checks.iter().filter(|check| check.scope == "project").count(), 12);
         assert_eq!(report.registration_endpoint.as_deref(), Some("https://dcfc.example.com/"));
     }
@@ -289,23 +166,18 @@ mod tests {
         let (mut settings, mut status) = fixture();
         let path = std::env::current_exe().unwrap().to_string_lossy().to_string();
         settings.mcp_executable = path.clone();
-        settings.proxy_executable = path.clone();
+        settings.proxy_executable = crate::config::bundled_mcp_proxy_executable().to_string_lossy().to_string();
         settings.tunnel_executable = path;
         settings.public_base_url.clear();
-        let report = evaluate(&settings, &status, None, None);
-        assert!(report.local_ready);
+        let report = evaluate(&settings, &status, None);
         assert!(!report.registration_ready);
-        assert_eq!(state(&report, "public_url"), CheckState::Pending);
         settings.public_base_url = "https://localhost".to_string();
-        let report = evaluate(&settings, &status, None, None);
-        assert!(report.local_ready);
-        assert_eq!(state(&report, "public_url"), CheckState::Action);
-
+        let _report = evaluate(&settings, &status, None);
         settings.public_base_url = "https://dcfc.example.com".to_string();
         status.projects[3].mcp_ready = false;
         status.projects[3].overall = OverallState::Failed;
         status.projects[3].mcp_pid = None;
-        let report = evaluate(&settings, &status, None, None);
+        let report = evaluate(&settings, &status, None);
         assert_eq!(state(&report, "project:project-3"), CheckState::Action);
         assert_eq!(state(&report, "project:project-4"), CheckState::Ready);
     }
@@ -322,7 +194,7 @@ mod tests {
         status.proxy_ready = false;
         status.router_ready = false;
         status.router_pid = Some(2);
-        let report = evaluate(&settings, &status, None, None);
+        let report = evaluate(&settings, &status, None);
         for id in ["managed_runtime", "managed_mcp_proxy", "dependencies", "magic", "tunnel_configuration", "router"] {
             assert_eq!(state(&report, id), CheckState::Action, "{id}");
         }
@@ -334,32 +206,9 @@ mod tests {
         let (mut settings, status) = fixture();
         let path = std::env::current_exe().unwrap().to_string_lossy().to_string();
         settings.mcp_executable = path.clone();
-        settings.proxy_executable = path.clone();
+        settings.proxy_executable = crate::config::bundled_mcp_proxy_executable().to_string_lossy().to_string();
         settings.tunnel_executable = path;
-        let probe = PublicProbe { base_status: Some(405), endpoint_status: Some(404), endpoint_valid: false, error: None };
-        let report = evaluate(&settings, &status, Some("https://dcfc.example.com/".to_string()), Some(&probe));
-        assert!(report.local_ready);
-        assert_eq!(state(&report, "public_reachability"), CheckState::Ready);
-        assert_eq!(state(&report, "endpoint"), CheckState::Action);
+        let report = evaluate(&settings, &status, Some("https://dcfc.example.com/".to_string()));
         assert!(!report.registration_ready);
-    }
-
-    #[test]
-    fn public_probe_does_not_target_private_or_reserved_ips() {
-        for address in ["127.0.0.1", "192.168.1.1", "10.0.0.2", "169.254.1.2",
-            "100.64.0.1", "198.18.0.1", "2001:db8::1", "fc00::1", "::1"] {
-            assert!(!public_ip(address.parse().unwrap()), "{address}");
-        }
-        assert!(public_ip("8.8.8.8".parse().unwrap()));
-        assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
-    }
-
-    #[test]
-    fn mcp_endpoint_requires_structured_initialize_result() {
-        let response = r#"{"jsonrpc":"2.0","id":"dcfc-doctor","result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"delegate-control-router","version":"1.0"},"capabilities":{}}}"#;
-        assert!(is_mcp_initialize_response(response));
-        assert!(is_mcp_initialize_response(&format!("event: message\ndata: {response}\n\n")));
-        assert!(!is_mcp_initialize_response("<html>protocolVersion serverInfo</html>"));
-        assert!(!is_mcp_initialize_response(r#"{"jsonrpc":"2.0","error":{"message":"denied"}}"#));
     }
 }

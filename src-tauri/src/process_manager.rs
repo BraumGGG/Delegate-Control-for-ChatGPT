@@ -1,6 +1,6 @@
-use crate::{config::{AppSettings, ProjectConfig}, credentials, proxy_config::{build_proxy_toml, build_router_registry, write_proxy_config}};
+use crate::{config::{AppSettings, NetworkMode, ProjectConfig}, credentials, proxy_config::{build_proxy_toml, build_router_registry, write_proxy_config}};
 use serde::Serialize;
-use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::{Read, Write}, net::{TcpStream, ToSocketAddrs}, os::windows::{io::AsRawHandle, process::CommandExt}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant}};
+use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::{Read, Write}, net::{TcpStream, ToSocketAddrs}, os::windows::{io::AsRawHandle, process::CommandExt}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use windows_sys::Win32::{Foundation::{CloseHandle, HANDLE}, System::{JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE}, Threading::CREATE_NO_WINDOW}};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -56,6 +56,56 @@ pub struct MagicPortProbe {
 
 struct ManagedProject { child: Child }
 
+#[derive(Debug, Serialize)]
+struct StartupDiagnostic {
+    timestamp_ms: u128,
+    stage: String,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_exists: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_readable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_directory: Option<String>,
+    detail: String,
+}
+
+impl StartupDiagnostic {
+    fn new(stage: &str, state: &str, detail: impl Into<String>) -> Self {
+        let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis()).unwrap_or_default();
+        Self {
+            timestamp_ms,
+            stage: stage.to_string(),
+            state: state.to_string(),
+            executable: None,
+            config_path: None,
+            config_exists: None,
+            config_readable: None,
+            endpoint: None,
+            tcp_ready: None,
+            http_status: None,
+            http_status_category: None,
+            session_id: None,
+            log_directory: None,
+            detail: detail.into(),
+        }
+    }
+}
+
 pub struct ProcessManager {
     projects: HashMap<String, ManagedProject>,
     project_failures: HashMap<String, String>,
@@ -69,19 +119,20 @@ pub struct ProcessManager {
     connector_capability_path: Option<String>,
     text_editing_available: bool,
     connector_capability_message: String,
+    session_id: Option<String>,
 }
 
 unsafe impl Send for ProcessManager {}
 
 impl ProcessManager {
     pub fn new(log_dir: PathBuf) -> Self {
-        Self { projects: HashMap::new(), project_failures: HashMap::new(), proxy: None, router: None, tunnel: None, job: None, overall: OverallState::Stopped, message: "连接仅在需要时启动。".to_string(), log_dir, connector_capability_path: None, text_editing_available: false, connector_capability_message: "尚未检测 Connector 文件编辑能力。".to_string() }
+        Self { projects: HashMap::new(), project_failures: HashMap::new(), proxy: None, router: None, tunnel: None, job: None, overall: OverallState::Stopped, message: "连接仅在需要时启动。".to_string(), log_dir, connector_capability_path: None, text_editing_available: false, connector_capability_message: "尚未检测 Connector 文件编辑能力。".to_string(), session_id: None }
     }
 
     pub fn status(&mut self, settings: &AppSettings) -> DelegateStatus {
         self.refresh_process_state();
         self.refresh_connector_capability(&settings.mcp_executable);
-        let proxy_ready = detect_clash_port(settings).is_ok();
+        let proxy_ready = settings.network_mode == NetworkMode::Direct || detect_clash_port(settings).is_ok();
         let router_ready = self.router.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.router_port, 350);
         let mcp_proxy_ready = self.proxy.is_some() && tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 350);
         let tunnel_ready = self.tunnel.is_some() && http_ready(&settings.health_host, settings.health_port, 500);
@@ -102,6 +153,7 @@ impl ProcessManager {
         if settings.projects.iter().all(|project| !project.enabled) { return self.fail("至少启用一个项目后才能启动连接。".to_string()); }
         if self.all_enabled_running(settings) && self.router.is_some() && self.proxy.is_some() && self.tunnel.is_some() { return Ok(self.status(settings)); }
         self.stop_internal();
+        self.begin_log_session()?;
         self.overall = OverallState::Starting;
         self.message = "正在启动多个项目的本地 MCP。".to_string();
         let key = credentials::read_runtime_key()?;
@@ -132,6 +184,9 @@ impl ProcessManager {
             return self.fail(format!("项目“{}”尚未启用，请先在设置中启用后再启动。", project.name));
         }
         if self.projects.contains_key(project_id) { return Ok(self.status(settings)); }
+        if self.projects.is_empty() && !self.shared_chain_ready() {
+            self.begin_log_session()?;
+        }
         if self.job.is_none() { self.job = Some(create_job()?); }
         self.overall = OverallState::Starting;
         if let Err(error) = self.start_project_mcp(settings, project) {
@@ -222,6 +277,7 @@ impl ProcessManager {
             "proxy" => (vec!["proxy.stderr.log", "proxy.stdout.log"], self.log_dir.clone()),
             "router" => (vec!["router.stderr.log", "router.stdout.log"], self.log_dir.clone()),
             "tunnel" => (vec!["tunnel.stderr.log", "tunnel.log", "tunnel.stdout.log"], self.log_dir.clone()),
+            "startup" => (vec!["startup-diagnostics.jsonl"], self.log_dir.clone()),
             _ => return Err("未知日志类型。".to_string()),
         };
         let mut combined = String::new();
@@ -349,6 +405,8 @@ impl ProcessManager {
         let project_log_dir = self.log_dir.join(&project.id);
         fs::create_dir_all(&project_log_dir).map_err(|error| format!("无法创建项目日志目录：{error}"))?;
         let stderr_path = project_log_dir.join("mcp.stderr.log");
+        append_session_marker(&stderr_path, self.session_id.as_deref(), "project-mcp")?;
+        append_session_marker(&project_log_dir.join("mcp.stdout.log"), self.session_id.as_deref(), "project-mcp")?;
         let stderr_offset = log_offset(&stderr_path);
         let stdout = log_file(&project_log_dir.join("mcp.stdout.log"))?;
         let stderr = log_file(&stderr_path)?;
@@ -371,14 +429,58 @@ impl ProcessManager {
     }
 
     fn start_shared(&mut self, settings: &AppSettings, key: &str) -> Result<(), String> {
-        let clash_port = detect_clash_port(settings)?;
+        let clash_port = resolve_clash_port(settings)?;
         if tcp_ready(&settings.mcp_proxy_host, settings.router_port, 250) { return Err(format!("Router 端口 {} 已被其他程序占用。", settings.router_port)); }
         if tcp_ready(&settings.mcp_proxy_host, settings.mcp_proxy_port, 250) { return Err(format!("MCP Proxy 端口 {} 已被其他程序占用。", settings.mcp_proxy_port)); }
         if tcp_ready(&settings.health_host, settings.health_port, 250) { return Err(format!("健康端口 {} 已被其他程序占用。", settings.health_port)); }
         let projects = settings.projects.iter().filter(|project| self.projects.contains_key(&project.id)).cloned().collect::<Vec<_>>();
-        self.write_router_registry(settings, &projects)?;
+        let router_endpoint = format!("http://{}:{}/mcp", settings.mcp_proxy_host, settings.router_port);
+        let mut router_config_diag = StartupDiagnostic::new("router_registry", "writing", "正在生成 Router 项目注册表。");
+        router_config_diag.config_path = Some(settings.router_config_path.clone());
+        record_startup_diagnostic(&self.log_dir, router_config_diag);
+        if let Err(error) = self.write_router_registry(settings, &projects) {
+            let mut diagnostic = StartupDiagnostic::new("router_registry", "failed", error.clone());
+            diagnostic.config_path = Some(settings.router_config_path.clone());
+            record_startup_diagnostic(&self.log_dir, diagnostic);
+            return Err(error);
+        }
+        let (router_registry_exists, router_registry_readable) = file_access_state(&settings.router_config_path);
+        let mut router_registry_diag = StartupDiagnostic::new("router_registry", if router_registry_exists && router_registry_readable { "ready" } else { "failed" }, "Router 注册表已生成。");
+        router_registry_diag.config_path = Some(settings.router_config_path.clone());
+        router_registry_diag.config_exists = Some(router_registry_exists);
+        router_registry_diag.config_readable = Some(router_registry_readable);
+        record_startup_diagnostic(&self.log_dir, router_registry_diag);
+        if !router_registry_exists || !router_registry_readable {
+            return Err(format!("Router 注册表不可读：{}。请查看启动诊断。", settings.router_config_path));
+        }
         let toml = build_proxy_toml(settings, &projects)?;
-        write_proxy_config(Path::new(&settings.proxy_config_path), &toml)?;
+        let mut proxy_config_diag = StartupDiagnostic::new("proxy_config", "writing", "正在生成 MCP Proxy 配置。");
+        proxy_config_diag.config_path = Some(settings.proxy_config_path.clone());
+        record_startup_diagnostic(&self.log_dir, proxy_config_diag);
+        if let Err(error) = write_proxy_config(Path::new(&settings.proxy_config_path), &toml) {
+            let mut diagnostic = StartupDiagnostic::new("proxy_config", "failed", error.clone());
+            diagnostic.config_path = Some(settings.proxy_config_path.clone());
+            record_startup_diagnostic(&self.log_dir, diagnostic);
+            return Err(error);
+        }
+        let (proxy_config_exists, proxy_config_readable) = file_access_state(&settings.proxy_config_path);
+        let mut proxy_config_ready = StartupDiagnostic::new("proxy_config", if proxy_config_exists && proxy_config_readable { "ready" } else { "failed" }, "MCP Proxy 配置已生成。");
+        proxy_config_ready.config_path = Some(settings.proxy_config_path.clone());
+        proxy_config_ready.config_exists = Some(proxy_config_exists);
+        proxy_config_ready.config_readable = Some(proxy_config_readable);
+        record_startup_diagnostic(&self.log_dir, proxy_config_ready);
+        if !proxy_config_exists || !proxy_config_readable {
+            return Err(format!("MCP Proxy 配置不可读：{}。请查看启动诊断。", settings.proxy_config_path));
+        }
+        let (proxy_exists, proxy_readable) = file_access_state(&settings.proxy_executable);
+        let mut proxy_executable_diag = StartupDiagnostic::new("proxy_executable", if proxy_exists && proxy_readable { "ready" } else { "failed" }, "已核对 MCP Proxy 实际执行文件。");
+        proxy_executable_diag.executable = Some(settings.proxy_executable.clone());
+        proxy_executable_diag.config_exists = Some(proxy_exists);
+        proxy_executable_diag.config_readable = Some(proxy_readable);
+        record_startup_diagnostic(&self.log_dir, proxy_executable_diag);
+        if !proxy_exists || !proxy_readable {
+            return Err(format!("MCP Proxy 程序不可读：{}。请查看启动诊断。", settings.proxy_executable));
+        }
         fs::create_dir_all(&self.log_dir).map_err(|error| format!("无法创建日志目录：{error}"))?;
         let router_stderr_path = self.log_dir.join("router.stderr.log");
         let router_stderr_offset = log_offset(&router_stderr_path);
@@ -387,6 +489,11 @@ impl ProcessManager {
         let mut router_command = Command::new(&settings.mcp_executable);
         router_command.args(["router", "--config", &settings.router_config_path, "--host", &settings.mcp_proxy_host, "--port", &settings.router_port.to_string()]).stdin(Stdio::null()).stdout(Stdio::from(router_stdout)).stderr(Stdio::from(router_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut router = router_command.spawn().map_err(|error| format!("无法启动 Router MCP：{error}"))?;
+        let mut router_process_diag = StartupDiagnostic::new("router_process", "started", "Router MCP 进程已创建。");
+        router_process_diag.executable = Some(settings.mcp_executable.clone());
+        router_process_diag.config_path = Some(settings.router_config_path.clone());
+        router_process_diag.endpoint = Some(router_endpoint.clone());
+        record_startup_diagnostic(&self.log_dir, router_process_diag);
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &router) {
             terminate_child(&mut router);
             return Err(error);
@@ -395,6 +502,11 @@ impl ProcessManager {
         if !matches!(wait_result, WaitResult::Ready) {
             terminate_child(&mut router);
             let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未出现 Router 启动完成标记", WaitResult::Ready => unreachable!() };
+            let mut diagnostic = StartupDiagnostic::new("router_process", "failed", format!("Router 启动失败：{reason}。"));
+            diagnostic.executable = Some(settings.mcp_executable.clone());
+            diagnostic.config_path = Some(settings.router_config_path.clone());
+            diagnostic.endpoint = Some(router_endpoint.clone());
+            record_startup_diagnostic(&self.log_dir, diagnostic);
             return Err(format!("Router MCP 未能就绪：{}。请查看 Router 日志。当前程序：{}", reason, settings.mcp_executable));
         }
         // FastMCP writes its startup marker just before the Uvicorn socket is
@@ -402,7 +514,30 @@ impl ProcessManager {
         // turn a transient 502 into a misleading "Proxy 未能就绪" failure.
         if !wait_for_tcp(&settings.mcp_proxy_host, settings.router_port, Duration::from_secs(10), &mut router) {
             terminate_child(&mut router);
+            let mut diagnostic = StartupDiagnostic::new("router_tcp_readiness", "failed", "Router 启动日志已出现，但 TCP 端口不可连接。");
+            diagnostic.config_path = Some(settings.router_config_path.clone());
+            diagnostic.endpoint = Some(router_endpoint.clone());
+            diagnostic.tcp_ready = Some(false);
+            record_startup_diagnostic(&self.log_dir, diagnostic);
             return Err(format!("Router MCP 已报告启动但端口 {}:{} 仍不可连接。请查看 Router 日志。", settings.mcp_proxy_host, settings.router_port));
+        }
+        let mut router_tcp_diag = StartupDiagnostic::new("router_tcp_readiness", "ready", "Router TCP 端口可连接。");
+        router_tcp_diag.config_path = Some(settings.router_config_path.clone());
+        router_tcp_diag.endpoint = Some(router_endpoint.clone());
+        router_tcp_diag.tcp_ready = Some(true);
+        record_startup_diagnostic(&self.log_dir, router_tcp_diag);
+        let (router_http_ready, router_http_status) = wait_for_mcp_http(&settings.mcp_proxy_host, settings.router_port, Duration::from_secs(10), &mut router);
+        let mut router_http_diag = StartupDiagnostic::new("router_mcp_http_readiness", if router_http_ready { "ready" } else { "failed" }, if router_http_ready { "Router MCP initialize 预检成功。" } else { "Router MCP initialize 预检未返回 2xx。" });
+        router_http_diag.config_path = Some(settings.router_config_path.clone());
+        router_http_diag.endpoint = Some(router_endpoint.clone());
+        router_http_diag.tcp_ready = Some(true);
+        router_http_diag.http_status = router_http_status;
+        router_http_diag.http_status_category = Some(http_status_category(router_http_status));
+        record_startup_diagnostic(&self.log_dir, router_http_diag);
+        if !router_http_ready {
+            terminate_child(&mut router);
+            let status = router_http_status.map(|code| code.to_string()).unwrap_or_else(|| "无响应".to_string());
+            return Err(format!("Router MCP HTTP 预检失败：状态 {status}，端点 {router_endpoint}。请查看启动诊断和 Router 日志。"));
         }
         self.router = Some(router);
         let proxy_stderr_path = self.log_dir.join("proxy.stderr.log");
@@ -410,7 +545,14 @@ impl ProcessManager {
         let proxy_stdout = log_file(&self.log_dir.join("proxy.stdout.log"))?;
         let proxy_stderr = log_file(&proxy_stderr_path)?;
         let mut proxy_command = Command::new(&settings.proxy_executable);
-        proxy_command.args(["--config", &settings.proxy_config_path]).stdin(Stdio::null()).stdout(Stdio::from(proxy_stdout)).stderr(Stdio::from(proxy_stderr)).creation_flags(CREATE_NO_WINDOW);
+        proxy_command.args(["--config", &settings.proxy_config_path]);
+        apply_loopback_proxy_bypass(&mut proxy_command);
+        proxy_command.stdin(Stdio::null()).stdout(Stdio::from(proxy_stdout)).stderr(Stdio::from(proxy_stderr)).creation_flags(CREATE_NO_WINDOW);
+        let mut proxy_spawn_diag = StartupDiagnostic::new("proxy_process", "starting", "使用显式 --config 参数启动 MCP Proxy，并为本机 Router 设置 loopback 代理绕行。");
+        proxy_spawn_diag.executable = Some(settings.proxy_executable.clone());
+        proxy_spawn_diag.config_path = Some(settings.proxy_config_path.clone());
+        proxy_spawn_diag.endpoint = Some(router_endpoint.clone());
+        record_startup_diagnostic(&self.log_dir, proxy_spawn_diag);
         let mut proxy = proxy_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 MCP Proxy：{error}") })?;
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &proxy) {
             terminate_child(&mut proxy);
@@ -424,8 +566,18 @@ impl ProcessManager {
             terminate_child(&mut proxy);
             self.stop_shared();
             let reason = match wait_result { WaitResult::Exited => "进程已退出", WaitResult::TimedOut => "15 秒内未出现 Proxy 就绪标记", WaitResult::Ready => unreachable!() };
-            return Err(format!("MCP Proxy 未能就绪：{}。请查看 proxy 日志。当前程序：{}", reason, settings.proxy_executable));
+            let mut diagnostic = StartupDiagnostic::new("proxy_backend_initialization", "failed", format!("MCP Proxy backend 初始化失败：{reason}。"));
+            diagnostic.executable = Some(settings.proxy_executable.clone());
+            diagnostic.config_path = Some(settings.proxy_config_path.clone());
+            diagnostic.endpoint = Some(router_endpoint.clone());
+            record_startup_diagnostic(&self.log_dir, diagnostic);
+            return Err(format!("MCP Proxy 未能就绪：{}。请查看 proxy 日志（目录：{}）。当前程序：{}", reason, self.log_dir.display(), settings.proxy_executable));
         }
+        let mut proxy_ready_diag = StartupDiagnostic::new("proxy_backend_initialization", "ready", "MCP Proxy backend 已初始化并报告 Proxy ready。");
+        proxy_ready_diag.executable = Some(settings.proxy_executable.clone());
+        proxy_ready_diag.config_path = Some(settings.proxy_config_path.clone());
+        proxy_ready_diag.endpoint = Some(router_endpoint);
+        record_startup_diagnostic(&self.log_dir, proxy_ready_diag);
         self.proxy = Some(proxy);
 
         let tunnel_log = self.log_dir.join("tunnel.log");
@@ -435,8 +587,12 @@ impl ProcessManager {
         // mcp-proxy exposes its Streamable HTTP router at the root path. The
         // project backends behind it still use /mcp, but the shared Tunnel
         // must target the proxy root so initialize requests are not 404.
-        tunnel_command.args(tunnel_identity_args(settings))
-            .args(["--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port), "--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()])
+        let tunnel_args = ["--mcp.server-url", &format!("url=http://{}:{},channel=main", settings.mcp_proxy_host, settings.mcp_proxy_port), "--open-web-ui=false", "--log.file", &tunnel_log.to_string_lossy()];
+        tunnel_command.args(tunnel_identity_args(settings));
+        if let Some(clash_port) = clash_port {
+            tunnel_command.args(["--control-plane.http-proxy", &format!("http://{}:{}", settings.proxy_host, clash_port)]);
+        }
+        tunnel_command.args(tunnel_args)
             .env("CONTROL_PLANE_API_KEY", key).stdin(Stdio::null()).stdout(Stdio::from(tunnel_stdout)).stderr(Stdio::from(tunnel_stderr)).creation_flags(CREATE_NO_WINDOW);
         let mut tunnel = tunnel_command.spawn().map_err(|error| { self.stop_shared(); format!("无法启动 Tunnel：{error}") })?;
         if let Err(error) = assign_to_job(self.job.ok_or_else(|| "Windows Job Object 尚未创建。".to_string())?, &tunnel) {
@@ -450,6 +606,20 @@ impl ProcessManager {
     }
 
     fn stop_shared(&mut self) { if let Some(mut child) = self.tunnel.take() { terminate_child(&mut child); } if let Some(mut child) = self.proxy.take() { terminate_child(&mut child); } if let Some(mut child) = self.router.take() { terminate_child(&mut child); } }
+
+    fn begin_log_session(&mut self) -> Result<(), String> {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| format!("无法生成日志会话时间戳：{error}"))?.as_millis();
+        let session_id = format!("session-{timestamp}");
+        archive_and_clear_runtime_logs(&self.log_dir, &session_id)?;
+        self.session_id = Some(session_id.clone());
+        for name in ["proxy.stderr.log", "proxy.stdout.log", "router.stderr.log", "router.stdout.log", "tunnel.stderr.log", "tunnel.stdout.log", "tunnel.log"] {
+            append_session_marker(&self.log_dir.join(name), Some(&session_id), "shared")?;
+        }
+        let mut diagnostic = StartupDiagnostic::new("session", "started", "已创建新的运行日志会话；上一会话日志已归档，当前日志文件仅包含本次启动内容。");
+        diagnostic.session_id = Some(session_id);
+        record_startup_diagnostic(&self.log_dir, diagnostic);
+        Ok(())
+    }
 
     fn refresh_process_state(&mut self) {
         let dead = self.projects.iter_mut().filter_map(|(id, managed)| managed.child.try_wait().ok().flatten().map(|_| id.clone())).collect::<Vec<_>>();
@@ -516,8 +686,77 @@ fn create_job() -> Result<HANDLE, String> {
 fn assign_to_job(job: HANDLE, child: &Child) -> Result<(), String> { if unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) } == 0 { Err(format!("无法将进程加入 Job Object：{}", std::io::Error::last_os_error())) } else { Ok(()) } }
 fn terminate_child(child: &mut Child) { let _ = child.kill(); let _ = child.wait(); }
 fn require_file(path: &str, label: &str) -> Result<(), String> { if Path::new(path).is_file() { Ok(()) } else { Err(format!("找不到{label}：{path}")) } }
+fn loopback_bypass_value(existing: Option<&str>) -> String {
+    let mut values = existing.unwrap_or_default().split(',').map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase).collect::<Vec<_>>();
+    for value in ["localhost", "127.0.0.1", "::1"] {
+        if !values.iter().any(|current| current == value) { values.push(value.to_string()); }
+    }
+    values.join(",")
+}
+fn apply_loopback_proxy_bypass(command: &mut Command) {
+    let existing_upper = std::env::var("NO_PROXY").ok();
+    let existing_lower = std::env::var("no_proxy").ok();
+    let bypass = loopback_bypass_value(existing_upper.as_deref().or(existing_lower.as_deref()));
+    command.env("NO_PROXY", &bypass).env("no_proxy", bypass);
+}
 fn log_file(path: &Path) -> Result<File, String> { if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| format!("无法创建日志目录：{error}"))?; } OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("无法打开日志 {}：{error}", path.display())) }
 fn log_offset(path: &Path) -> u64 { fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0) }
+fn append_session_marker(path: &Path, session_id: Option<&str>, component: &str) -> Result<(), String> {
+    let Some(session_id) = session_id else { return Ok(()); };
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| format!("无法创建日志目录：{error}"))?; }
+    let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("无法写入日志会话标记 {}：{error}", path.display()))?;
+    writeln!(file, "===== DCFC {component} log session {session_id} =====").map_err(|error| format!("无法写入日志会话标记 {}：{error}", path.display()))
+}
+fn collect_runtime_log_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !root.is_dir() { return Ok(()); }
+    for entry in fs::read_dir(root).map_err(|error| format!("无法读取日志目录 {}：{error}", root.display()))? {
+        let entry = entry.map_err(|error| format!("无法读取日志目录项：{error}"))?;
+        let path = entry.path();
+        if path.file_name().is_some_and(|name| name == "archive") { continue; }
+        if path.is_dir() {
+            collect_runtime_log_files(&path, output)?;
+        } else if path.extension().is_some_and(|extension| extension == "log") || path.file_name().is_some_and(|name| name == "startup-diagnostics.jsonl") {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+fn archive_and_clear_runtime_logs(log_dir: &Path, session_id: &str) -> Result<(), String> {
+    fs::create_dir_all(log_dir).map_err(|error| format!("无法创建日志目录：{error}"))?;
+    let mut files = Vec::new();
+    collect_runtime_log_files(log_dir, &mut files)?;
+    if files.is_empty() { return Ok(()); }
+    let archive_root = log_dir.join("archive").join(session_id);
+    for path in files {
+        let relative = path.strip_prefix(log_dir).map_err(|error| format!("无法计算日志归档路径：{error}"))?;
+        let destination = archive_root.join(relative);
+        if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|error| format!("无法创建日志归档目录：{error}"))?; }
+        fs::copy(&path, &destination).map_err(|error| format!("无法归档日志 {}：{error}", path.display()))?;
+        OpenOptions::new().write(true).truncate(true).open(&path).map_err(|error| format!("无法清空当前日志 {}：{error}", path.display()))?;
+    }
+    Ok(())
+}
+fn record_startup_diagnostic(log_dir: &Path, mut diagnostic: StartupDiagnostic) {
+    let path = log_dir.join("startup-diagnostics.jsonl");
+    diagnostic.log_directory = Some(log_dir.to_string_lossy().to_string());
+    let Ok(mut file) = log_file(&path) else { return; };
+    let Ok(line) = serde_json::to_string(&diagnostic) else { return; };
+    let _ = writeln!(file, "{line}");
+}
+fn file_access_state(path: &str) -> (bool, bool) {
+    let exists = Path::new(path).is_file();
+    let readable = exists && File::open(path).is_ok();
+    (exists, readable)
+}
+fn http_status_category(status: Option<u16>) -> String {
+    match status {
+        Some(code) if (200..300).contains(&code) => "2xx_ready".to_string(),
+        Some(400..500) => "4xx_client_or_protocol".to_string(),
+        Some(500..600) => "5xx_server_or_intermediary".to_string(),
+        Some(_) => "other_http_status".to_string(),
+        None => "no_http_response".to_string(),
+    }
+}
 fn log_contains_marker(path: &Path, offset: u64, marker: &[u8]) -> bool {
     if marker.is_empty() { return false; }
     let Ok(bytes) = fs::read(path) else { return false; };
@@ -527,6 +766,12 @@ fn log_contains_marker(path: &Path, offset: u64, marker: &[u8]) -> bool {
 fn detect_clash_port(settings: &AppSettings) -> Result<u16, String> {
     let compatible_port = if settings.proxy_port == 7897 { 7877 } else { 7897 };
     detect_clash_port_with_legacy(settings, compatible_port)
+}
+fn resolve_clash_port(settings: &AppSettings) -> Result<Option<u16>, String> {
+    match settings.network_mode {
+        NetworkMode::Direct => Ok(None),
+        NetworkMode::Magic => detect_clash_port(settings).map(Some),
+    }
 }
 fn detect_clash_port_with_legacy(settings: &AppSettings, legacy_port: u16) -> Result<u16, String> {
     if tcp_ready(&settings.proxy_host, settings.proxy_port, 700) {
@@ -549,6 +794,45 @@ fn wait_for_tcp(host: &str, port: u16, timeout: Duration, child: &mut Child) -> 
         thread::sleep(Duration::from_millis(100));
     }
     tcp_ready(host, port, 250)
+}
+fn mcp_initialize_probe(host: &str, port: u16, timeout_ms: u64) -> Option<u16> {
+    let address = format!("{host}:{port}");
+    let Some(socket) = address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()) else { return None; };
+    let Ok(mut stream) = TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)) else { return None; };
+    let timeout = Duration::from_millis(timeout_ms);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let body = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"dcfc-readiness","version":"1"}}}"#;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    if stream.write_all(request.as_bytes()).is_err() || stream.write_all(body).is_err() { return None; }
+    let mut response = Vec::with_capacity(512);
+    let mut buffer = [0_u8; 256];
+    while response.len() < 8 * 1024 {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                response.extend_from_slice(&buffer[..count]);
+                if response.windows(4).any(|window| window == b"\r\n\r\n") { break; }
+            }
+            Err(_) => return None,
+        }
+    }
+    parse_http_status(&response)
+}
+fn wait_for_mcp_http(host: &str, port: u16, timeout: Duration, child: &mut Child) -> (bool, Option<u16>) {
+    let deadline = Instant::now() + timeout;
+    let mut last_status = None;
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() { return (false, last_status); }
+        if let Some(status) = mcp_initialize_probe(host, port, 500) {
+            last_status = Some(status);
+            if (200..300).contains(&status) { return (true, last_status); }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    (false, last_status.or_else(|| mcp_initialize_probe(host, port, 500)))
 }
 fn http_ready(host: &str, port: u16, timeout_ms: u64) -> bool {
     http_probe(host, port, "/readyz", timeout_ms).is_some_and(|code| (200..300).contains(&code))
@@ -645,6 +929,34 @@ mod tests {
         assert_eq!(parse_http_status(b"HTTP/1.1 201 OK\r\n\r\n"), Some(201));
         assert_eq!(parse_http_status(b"HTTP/1.1 503 Service Unavailable\r\n\r\n"), Some(503));
         assert_eq!(parse_http_status(b"HTTP/1.1 OK\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn startup_diagnostic_writes_paths_and_http_category_without_secrets() {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("dcfc-startup-diagnostic-{suffix}"));
+        let mut diagnostic = StartupDiagnostic::new("router_mcp_http_readiness", "failed", "Router MCP initialize 预检未返回 2xx。");
+        diagnostic.config_path = Some("C:\\AppData\\Delegate Control\\router-projects.json".to_string());
+        diagnostic.endpoint = Some("http://127.0.0.1:8101/mcp".to_string());
+        diagnostic.http_status = Some(502);
+        diagnostic.http_status_category = Some(http_status_category(Some(502)));
+        record_startup_diagnostic(&root, diagnostic);
+
+        let line = fs::read_to_string(root.join("startup-diagnostics.jsonl")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["stage"], "router_mcp_http_readiness");
+        assert_eq!(value["http_status"], 502);
+        assert_eq!(value["http_status_category"], "5xx_server_or_intermediary");
+        assert!(!line.contains("CONTROL_PLANE_API_KEY"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn http_status_categories_distinguish_missing_response_and_5xx() {
+        assert_eq!(http_status_category(None), "no_http_response");
+        assert_eq!(http_status_category(Some(200)), "2xx_ready");
+        assert_eq!(http_status_category(Some(502)), "5xx_server_or_intermediary");
+        assert_eq!(http_status_category(Some(404)), "4xx_client_or_protocol");
     }
 
     #[test]
@@ -782,6 +1094,20 @@ mod tests {
         assert!(manager.router.is_none());
         assert!(manager.proxy.is_none());
         assert!(manager.tunnel.is_none());
+    }
+
+    #[test]
+    fn direct_mode_skips_magic_preflight() {
+        let mut settings = AppSettings::default();
+        settings.network_mode = NetworkMode::Direct;
+        settings.proxy_host = "invalid-host-for-direct-mode".to_string();
+        settings.proxy_port = 0;
+        assert_eq!(resolve_clash_port(&settings).unwrap(), None);
+
+        let mut magic = settings.clone();
+        magic.network_mode = NetworkMode::Magic;
+        let error = resolve_clash_port(&magic).unwrap_err();
+        assert!(error.contains("Magic 代理未就绪"));
     }
 
     #[test]

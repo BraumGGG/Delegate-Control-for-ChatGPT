@@ -13,8 +13,17 @@ pub struct ProjectConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkMode {
+    Direct,
+    Magic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default = "default_network_mode")]
+    pub network_mode: NetworkMode,
     pub proxy_host: String,
     pub proxy_port: u16,
     #[serde(default = "default_localhost")]
@@ -45,6 +54,7 @@ pub struct AppSettings {
 }
 
 fn default_true() -> bool { true }
+fn default_network_mode() -> NetworkMode { NetworkMode::Magic }
 fn default_localhost() -> String { "127.0.0.1".to_string() }
 fn default_mcp_proxy_port() -> u16 { 8100 }
 fn default_router_port() -> u16 { 8101 }
@@ -144,6 +154,7 @@ impl Default for AppSettings {
             enabled: true,
         };
         Self {
+            network_mode: NetworkMode::Magic,
             proxy_host: "127.0.0.1".to_string(),
             proxy_port: 7877,
             mcp_proxy_host: "127.0.0.1".to_string(),
@@ -167,10 +178,13 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn validate(&self) -> Result<(), String> {
-        if self.proxy_host.trim().is_empty() || self.mcp_proxy_host.trim().is_empty() || self.health_host.trim().is_empty() {
+        if self.network_mode == NetworkMode::Magic && self.proxy_host.trim().is_empty() {
+            return Err("Magic 模式必须配置本机代理主机。".to_string());
+        }
+        if self.mcp_proxy_host.trim().is_empty() || self.health_host.trim().is_empty() {
             return Err("代理、MCP Proxy 和健康检查主机地址不能为空。".to_string());
         }
-        if self.proxy_port == 0 || self.router_port == 0 || self.health_port == 0 {
+        if (self.network_mode == NetworkMode::Magic && self.proxy_port == 0) || self.router_port == 0 || self.health_port == 0 || self.mcp_proxy_port == 0 {
             return Err("代理、Router 和健康检查端口必须在 1 到 65535 之间。".to_string());
         }
         if self.mcp_proxy_port == self.router_port || self.mcp_proxy_port == self.health_port || self.router_port == self.health_port {
@@ -208,7 +222,7 @@ impl AppSettings {
             if !dirs.insert(normalized_path(directory)) {
                 return Err(format!("项目“{}”的输出目录与其他项目重复。", project.name));
             }
-            if project.mcp_port == 0 || project.mcp_port == self.mcp_proxy_port || project.mcp_port == self.router_port || project.mcp_port == self.health_port {
+            if project.mcp_port == 0 || project.mcp_port == self.mcp_proxy_port || project.mcp_port == self.router_port || project.mcp_port == self.health_port || (self.network_mode == NetworkMode::Magic && project.mcp_port == self.proxy_port) {
                 return Err(format!("项目“{}”的 MCP 端口与共享端口冲突。", project.name));
             }
             if !ports.insert(project.mcp_port) {
@@ -464,6 +478,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
     if !has_legacy_project_fields {
         let defaults = AppSettings::default();
         return AppSettings {
+            network_mode: defaults.network_mode,
             proxy_host: string_or_default(&value, "proxy_host", defaults.proxy_host),
             proxy_port: number_or_default(&value, "proxy_port", defaults.proxy_port),
             mcp_proxy_host: defaults.mcp_proxy_host,
@@ -495,6 +510,7 @@ pub fn load_settings_from_value(value: Value) -> AppSettings {
         enabled: true,
     };
     AppSettings {
+        network_mode: defaults.network_mode,
         proxy_host: string_value("proxy_host", defaults.proxy_host),
         proxy_port: number_value("proxy_port", defaults.proxy_port),
         mcp_proxy_host: "127.0.0.1".to_string(),
@@ -598,6 +614,15 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.projects[0].mcp_port = settings.health_port;
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn direct_mode_does_not_require_magic_host_or_port() {
+        let mut settings = AppSettings::default();
+        settings.network_mode = NetworkMode::Direct;
+        settings.proxy_host.clear();
+        settings.proxy_port = 0;
+        assert!(settings.validate().is_ok());
     }
 
     #[test]
