@@ -107,6 +107,12 @@ fn uses_managed_mcp_default(path: &str) -> bool {
         || normalized.ends_with("\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe")
 }
 
+fn is_legacy_managed_mcp_path(path: &str) -> bool {
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    normalized.ends_with("\\chatgpt-delegate-edit.exe")
+        && normalized.contains("\\chatgpt-delegate-edit-ondir-202")
+}
+
 fn uses_managed_mcp_proxy_default(path: &str) -> bool {
     let normalized = path.replace('/', "\\").to_ascii_lowercase();
     let current_default = bundled_mcp_proxy_executable().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
@@ -124,7 +130,9 @@ pub fn is_managed_mcp_proxy_path(path: &str) -> bool {
 }
 
 pub fn apply_managed_runtime_path(settings: &mut AppSettings, resource_dir: &Path) {
-    if settings.projects.is_empty() && uses_managed_mcp_default(&settings.mcp_executable) {
+    if (settings.projects.is_empty() || is_legacy_managed_mcp_path(&settings.mcp_executable))
+        && (uses_managed_mcp_default(&settings.mcp_executable) || is_legacy_managed_mcp_path(&settings.mcp_executable))
+    {
         settings.mcp_executable = bundled_mcp_executable_from_resource(resource_dir).to_string_lossy().to_string();
     }
     if uses_managed_mcp_proxy_default(&settings.proxy_executable) {
@@ -353,13 +361,16 @@ pub fn normalize_public_base_url(input: &str) -> Result<String, String> {
 pub fn load_application_settings_with_resource(path: &Path, resource_dir: Option<&Path>) -> AppSettings {
     let sources = legacy_settings_paths();
     let mut settings = load_settings_from_sources(path, &sources);
+    let mut changed = false;
     if let Some(resource_dir) = resource_dir {
+        let previous_mcp = settings.mcp_executable.clone();
+        let previous_proxy = settings.proxy_executable.clone();
         apply_managed_runtime_path(&mut settings, resource_dir);
+        changed |= settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy;
     }
     let stable_root = path.parent().unwrap_or_else(|| Path::new("."));
     let stable_proxy = stable_root.join("mcp-proxy.toml").to_string_lossy().to_string();
     let stable_router = stable_root.join("router-projects.json").to_string_lossy().to_string();
-    let mut changed = false;
     if is_legacy_runtime_path(&settings.proxy_config_path, "mcp-proxy.toml") && settings.proxy_config_path != stable_proxy {
         settings.proxy_config_path = stable_proxy;
         changed = true;
@@ -870,6 +881,24 @@ mod tests {
         let original = existing.mcp_executable.clone();
         apply_managed_runtime_path(&mut existing, &resource_dir);
         assert_eq!(existing.mcp_executable, original);
+    }
+
+    #[test]
+    fn managed_runtime_path_migrates_legacy_dcfc_connector_with_projects() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Delegate Control\resources");
+        let mut settings = AppSettings::default();
+        settings.mcp_executable = r"D:\DCFC\install\chatgpt-delegate-edit-ondir-20260928-012255\chatgpt-delegate-edit.exe".to_string();
+        apply_managed_runtime_path(&mut settings, &resource_dir);
+        assert_eq!(Path::new(&settings.mcp_executable), bundled_mcp_executable_from_resource(&resource_dir));
+    }
+
+    #[test]
+    fn managed_runtime_path_preserves_external_connector_with_projects() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Delegate Control\resources");
+        let mut settings = AppSettings::default();
+        settings.mcp_executable = r"C:\Tools\chatgpt-delegate-edit-ondir-custom\chatgpt-delegate-edit.exe".to_string();
+        apply_managed_runtime_path(&mut settings, &resource_dir);
+        assert_eq!(settings.mcp_executable, r"C:\Tools\chatgpt-delegate-edit-ondir-custom\chatgpt-delegate-edit.exe");
     }
 
     #[test]

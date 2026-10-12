@@ -5,7 +5,7 @@ mod process_manager;
 mod proxy_config;
 mod setup_doctor;
 
-use config::{app_data_root, apply_managed_runtime_path, load_application_settings, AppSettings};
+use config::{app_data_root, apply_managed_runtime_path, load_application_settings, save_settings, AppSettings};
 use process_manager::{DelegateStatus, ProcessManager};
 use std::{path::PathBuf, sync::{Arc, Mutex}};
 use tauri::Manager;
@@ -53,7 +53,12 @@ impl AppState {
 
     fn configure_resource_dir(&self, resource_dir: PathBuf) -> Result<(), String> {
         let mut settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?;
+        let previous_mcp = settings.mcp_executable.clone();
+        let previous_proxy = settings.proxy_executable.clone();
         apply_managed_runtime_path(&mut settings, &resource_dir);
+        if settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy {
+            save_settings(&self.settings_path, &settings)?;
+        }
         Ok(())
     }
 }

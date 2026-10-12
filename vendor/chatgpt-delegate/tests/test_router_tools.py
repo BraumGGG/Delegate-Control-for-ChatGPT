@@ -60,6 +60,8 @@ class RouterToolsTestCase(unittest.TestCase):
             "read_report",
             "connector_status",
             "read_text_file",
+            "read_text_file_metadata",
+            "read_text_file_chunk",
             "append_text_file",
             "append_handoff_entry",
             "replace_text_in_file",
@@ -125,6 +127,33 @@ class RouterToolsTestCase(unittest.TestCase):
             self.assertEqual(status["current_project"], "beta")
             with self.assertRaises(ValueError):
                 unknown("notes.md", project_id="missing")
+
+    def test_router_logs_response_stage_without_file_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "alpha"
+            project.mkdir()
+            (project / "notes.md").write_text("private file body", encoding="utf-8")
+            registry = root / "projects.json"
+            registry.write_text(
+                json.dumps(
+                    {
+                        "active_project_id": "alpha",
+                        "projects": [{"id": "alpha", "name": "Alpha", "output_directory": str(project), "enabled": True}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            _, functions = self._create_server_and_tools(registry)
+            with self.assertLogs("dcfc.router", level="INFO") as captured:
+                result = functions["read_text_file"]("notes.md", project_id="alpha")
+
+        joined = "\n".join(captured.output)
+        self.assertEqual(result["content"], "private file body")
+        self.assertIn("stage=router_received", joined)
+        self.assertIn("stage=router_completed", joined)
+        self.assertIn("response_bytes=", joined)
+        self.assertNotIn("private file body", joined)
 
 
 if __name__ == "__main__":

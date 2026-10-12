@@ -8,7 +8,7 @@ Delegate Control for ChatGPT（DCFC）是一款 Windows 桌面控制台，通过
 
 本项目是第三方工具，并非 OpenAI 或 ChatGPT 官方产品。它不是另一个模型聊天客户端，也不提供通用远程桌面或任意命令执行能力。
 
-当前源码与候选安装包版本为 **0.1.6**。本机构建与回归检查已通过，但 Direct/Magic 双模式的最终用户真机端到端验收仍待完成；本机就绪和页面截图不能证明外部 Connector 已成功调用。
+当前源码与候选安装包版本为 **0.1.12**。本机构建与回归检查已通过，但 Direct/Magic 双模式的最终用户真机端到端验收仍待完成；本机就绪和页面截图不能证明外部 Connector 已成功调用。
 
 ## 解决什么问题
 
@@ -30,7 +30,7 @@ DCFC 将这些操作连接起来：用户在本机配置项目目录，在 ChatG
 | 项目级运行控制 | 启动/停止单个项目、启动/停止全部项目；当前选中项目不等于停止其他项目 |
 | 共享连接 | 多项目共用一个固定 Router、一个 MCP Proxy 和一条 Tunnel，不需要为每个项目创建 Connector 或 Tunnel ID |
 | 报告与任务结果 | 保存、列出、读取 Markdown 报告和带任务标识的成果 |
-| 文本编辑 | 读取、追加、精确替换、删除 UTF-8 文本片段；限定在对应项目输出目录内 |
+| 文本编辑 | 读取、追加、精确替换、删除 UTF-8 文本片段；支持元数据、SHA-256 和大文件分段读取；限定在对应项目输出目录内 |
 | 结构化交接 | 向固定交接文件追加经过字段、编号和文件哈希校验的条目 |
 | 首次配置 | 引导配置运行依赖、Runtime API Key、Tunnel ID、网络模式和首个项目；提供外部创建/管理页面入口 |
 | 本机安装诊断 | 检查配置、内置组件、Tunnel Client、选定网络模式、共享链路和每个项目；不自动重置配置或启停进程 |
@@ -63,19 +63,21 @@ DCFC 桌面客户端负责配置、启动、停止和监控这些组件，并为
 
 ### 固定工具目录
 
-当前 Router 注册 **12 个固定工具**，项目选择通过可选 `project_id` 参数完成：
+当前 Router 注册 **14 个固定工具**，项目选择通过可选 `project_id` 参数完成：
 
 | 工具分组 | 工具名称 |
 | --- | --- |
 | 任务结果 | `save_task_result`、`list_results`、`read_result` |
 | Markdown 报告 | `save_markdown_report`、`list_reports`、`read_report` |
 | 状态查询 | `connector_status` |
-| 文本操作 | `read_text_file`、`append_text_file`、`replace_text_in_file`、`delete_text_from_file` |
+| 文本操作 | `read_text_file`、`read_text_file_metadata`、`read_text_file_chunk`、`append_text_file`、`replace_text_in_file`、`delete_text_from_file` |
 | 交接追加 | `append_handoff_entry` |
 
 工具名称与 Schema 不随项目增删变化，避免每个项目产生一套 `project_id__tool_name`。项目改名不会自动改变 Project Key；迁移 key 需要显式操作。
 
 多项目调用建议始终提供稳定 `project_id`。底层允许省略后使用当前项目或唯一可用项目，但这不是自然语言意图识别：请求不明确时应先澄清，不能猜目录。仅增删项目不改变工具清单；Connector 工具本身升级后仍可能需要在 ChatGPT 中重新同步或注册。
+
+读取大型交接文档时，先调用 `read_text_file_metadata` 获取字节数、修改时间和 SHA-256，再使用 `read_text_file_chunk(filename, offset, limit, project_id)` 循环读取，直到返回 `eof=true`。旧的 `read_text_file` 调用仍然兼容：小文件返回完整正文，大文件返回首段、完整哈希和 `next_offset`，不会把整个文件一次性推送到上游会话。
 
 ## 关键技术
 
@@ -95,6 +97,8 @@ Rust ProcessManager 跟踪项目及共享组件的 Child 句柄，将项目级�
 ### 文本版本保护与可恢复写入
 
 文本读取返回 SHA-256。一般编辑工具可传入 `expected_sha256`，检测读取后发生的文件变化；结构化交接追加强制要求该参数。替换/删除默认要求目标片段恰好出现一次，避免匹配过多时误改。
+
+Router 对文本读取记录脱敏的请求阶段、请求 ID、耗时、响应字节数和错误类别。日志不记录文件正文、工具参数内容、Runtime API Key 或 Authorization header，可用于区分 Router 已完成、Proxy 已收到响应和上游连接提前断开的阶段。
 
 修改已有文本前保留 `.dcfc-backups` 备份，然后在目标目录写临时文件、刷新并替换原文件。交接追加使用操作系统文件锁，并校验条目格式与重复编号。这些机制降低冲突和半写入风险，但不是 Git 合并，也不保证消除与所有外部编辑器的竞争。
 
@@ -195,7 +199,7 @@ src-tauri/target/release/bundle/msi/
 
 项目使用 [MIT License](LICENSE)。第三方组件保留各自许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-0.1.2 是此前用户接受的冻结回退基线，0.1.6 仍为候选行为。回退前备份当前配置和日志，使用保留的原安装包并核对原校验值；基线记录不等于已证明当前机器仍持有可用旧包，不要重打旧版本冒充原验收包。
+0.1.2 是此前用户接受的冻结回退基线，0.1.12 仍为候选行为。回退前备份当前配置和日志，使用保留的原安装包并核对原校验值；基线记录不等于已证明当前机器仍持有可用旧包，不要重打旧版本冒充原验收包。
 
 多项目改造前的源码保护标签为 `baseline-2026-09-22`。仅在当前工作已保存后，才基于该标签创建回退分支：
 

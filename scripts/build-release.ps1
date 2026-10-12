@@ -6,10 +6,8 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $runtimeRoot = Join-Path $root "artifacts\build-chatgpt-delegate\chatgpt-delegate-edit"
 $runtimeExe = Join-Path $runtimeRoot "chatgpt-delegate-edit.exe"
 
-if (-not (Test-Path $runtimeExe)) {
-    Write-Host "Managed Connector runtime is missing; building the onedir resource..."
-    & (Join-Path $PSScriptRoot "build-chatgpt-delegate.ps1")
-}
+Write-Host "Building the managed Connector runtime from the current vendor source..."
+& (Join-Path $PSScriptRoot "build-chatgpt-delegate.ps1")
 
 if (-not (Test-Path $runtimeExe)) {
     throw "Managed Connector runtime was not produced: $runtimeExe"

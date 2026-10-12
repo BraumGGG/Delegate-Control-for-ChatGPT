@@ -109,7 +109,7 @@ class ConnectorToolsTestCase(unittest.TestCase):
         payload = json.loads("".join(call.args[0] for call in write.call_args_list))
         self.assertEqual(result, 0)
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["connector_version"], "0.2.0-dcfc-router.1")
+        self.assertEqual(payload["connector_version"], "0.2.0-dcfc-router.2")
         self.assertTrue(payload["fixed_router"])
         self.assertTrue(payload["text_editing"])
         self.assertIn("append_text_file", payload["text_editing_tools"])

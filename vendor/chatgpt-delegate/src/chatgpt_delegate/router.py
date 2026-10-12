@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
+import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +23,14 @@ from .text_editing import (
     append_text_file as append_text_file_operation,
     delete_text_from_file as delete_text_from_file_operation,
     read_text_file as read_text_file_operation,
+    read_text_file_chunk as read_text_file_chunk_operation,
+    read_text_file_metadata as read_text_file_metadata_operation,
     replace_text_in_file as replace_text_in_file_operation,
 )
 
 
-ROUTER_VERSION = "0.2.0-dcfc-router.1"
+ROUTER_VERSION = "0.2.0-dcfc-router.2"
+LOGGER = logging.getLogger("dcfc.router")
 
 
 @dataclass(frozen=True)
@@ -75,12 +82,48 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
         "Use this connector to save, list, read, and safely edit local project text files. "
         "The public tool catalog is fixed. Use project_id when the user names a project; "
         "when project_id is omitted, DCFC's current project is used. Never guess a project "
-        "when the request is ambiguous. The connector never calls Codex, OpenAI API, or "
-        "ChatGPT private endpoints."
+        "when the request is ambiguous. For a large file, call read_text_file_metadata "
+        "first and then read_text_file_chunk with the returned next_offset until eof; "
+        "the SHA-256 is returned in every response. The connector never calls Codex, "
+        "OpenAI API, or ChatGPT private endpoints."
     )
     mcp = FastMCP(name="delegate-control-router", instructions=instructions)
     local_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
     read_only = ToolAnnotations(readOnlyHint=True)
+
+    def run_with_diagnostics(tool_name: str, project_id: str | None, operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        started = time.perf_counter()
+        LOGGER.info(
+            "mcp_request stage=router_received request_id=%s tool=%s project_id=%s",
+            request_id,
+            tool_name,
+            project_id or "active",
+        )
+        try:
+            result = operation()
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            LOGGER.warning(
+                "mcp_response stage=router_failed request_id=%s tool=%s project_id=%s elapsed_ms=%s error_category=%s",
+                request_id,
+                tool_name,
+                project_id or "active",
+                elapsed_ms,
+                type(exc).__name__,
+            )
+            raise
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        response_bytes = sum(len(value.encode("utf-8")) if isinstance(value, str) else 0 for value in result.values())
+        LOGGER.info(
+            "mcp_response stage=router_completed request_id=%s tool=%s project_id=%s elapsed_ms=%s response_bytes=%s is_error=false",
+            request_id,
+            tool_name,
+            project_id or "active",
+            elapsed_ms,
+            response_bytes,
+        )
+        return result
 
     def resolve_project(project_id: str | None) -> RouterProject:
         active, projects = load_router_projects(config_path)
@@ -146,33 +189,71 @@ def create_router_mcp_server(config_path: Path, max_bytes: int):
     @mcp.tool(annotations=read_only)
     def connector_status(project_id: str | None = None) -> dict[str, Any]:
         """Return fixed Router status and the selected project directory."""
-        active, projects = load_router_projects(config_path)
-        selected = resolve_project(project_id)
-        return {
-            "status": "ready",
-            "router": True,
-            "router_version": ROUTER_VERSION,
-            "current_project": selected.project_id,
-            "output_dir": str(selected.output_directory),
-            "projects": [{"project_id": item.project_id, "name": item.name, "enabled": item.enabled} for item in projects],
-            "active_project_id": active,
-            "text_editing": True,
-            "text_editing_tools": [
-                "read_text_file",
-                "append_text_file",
-                "append_handoff_entry",
-                "replace_text_in_file",
-                "delete_text_from_file",
-            ],
-            "codex_execution": False,
-            "openai_api": False,
-            "private_chatgpt_api": False,
-        }
+        def operation() -> dict[str, Any]:
+            active, projects = load_router_projects(config_path)
+            selected = resolve_project(project_id)
+            return {
+                "status": "ready",
+                "router": True,
+                "router_version": ROUTER_VERSION,
+                "current_project": selected.project_id,
+                "output_dir": str(selected.output_directory),
+                "projects": [{"project_id": item.project_id, "name": item.name, "enabled": item.enabled} for item in projects],
+                "active_project_id": active,
+                "text_editing": True,
+                "text_editing_tools": [
+                    "read_text_file",
+                    "read_text_file_metadata",
+                    "read_text_file_chunk",
+                    "append_text_file",
+                    "append_handoff_entry",
+                    "replace_text_in_file",
+                    "delete_text_from_file",
+                ],
+                "codex_execution": False,
+                "openai_api": False,
+                "private_chatgpt_api": False,
+            }
+
+        return run_with_diagnostics("connector_status", project_id, operation)
 
     @mcp.tool(annotations=read_only)
     def read_text_file(filename: str, project_id: str | None = None) -> dict[str, Any]:
         """Read a UTF-8 text file from a selected project."""
-        return read_text_file_operation(resolve_project(project_id).output_directory, filename, max_bytes=max_bytes)
+        return run_with_diagnostics(
+            "read_text_file",
+            project_id,
+            lambda: read_text_file_operation(resolve_project(project_id).output_directory, filename, max_bytes=max_bytes),
+        )
+
+    @mcp.tool(annotations=read_only)
+    def read_text_file_metadata(filename: str, project_id: str | None = None) -> dict[str, Any]:
+        """Read UTF-8 text file metadata without returning its content."""
+        return run_with_diagnostics(
+            "read_text_file_metadata",
+            project_id,
+            lambda: read_text_file_metadata_operation(resolve_project(project_id).output_directory, filename),
+        )
+
+    @mcp.tool(annotations=read_only)
+    def read_text_file_chunk(
+        filename: str,
+        offset: int = 0,
+        limit: int = 65536,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read one bounded UTF-8 chunk from a selected project file."""
+        return run_with_diagnostics(
+            "read_text_file_chunk",
+            project_id,
+            lambda: read_text_file_chunk_operation(
+                resolve_project(project_id).output_directory,
+                filename,
+                offset=offset,
+                limit=limit,
+                max_bytes=max_bytes,
+            ),
+        )
 
     @mcp.tool(annotations=local_write)
     def append_text_file(

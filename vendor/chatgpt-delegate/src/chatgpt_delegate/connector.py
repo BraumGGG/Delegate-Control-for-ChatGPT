@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from .text_editing import (
     append_text_file as append_text_file_operation,
     delete_text_from_file as delete_text_from_file_operation,
     read_text_file as read_text_file_operation,
+    read_text_file_chunk as read_text_file_chunk_operation,
+    read_text_file_metadata as read_text_file_metadata_operation,
     replace_text_in_file as replace_text_in_file_operation,
 )
 
@@ -490,7 +493,8 @@ def create_mcp_server(
         "information, produce the result in ChatGPT and call save_task_result with the final "
         "Markdown. Legacy save_markdown_report remains available only for older prompts. "
         "Text editing tools accept only relative UTF-8 text paths inside the configured project "
-        "directory. Replacement and deletion require an exact match count and reject stale files."
+        "directory. For large files, call read_text_file_metadata first and then use "
+        "read_text_file_chunk until eof. Replacement and deletion require an exact match count and reject stale files."
         " Use append_handoff_entry for validated append-only updates to the handoff document."
     )
     mcp = FastMCP(
@@ -575,11 +579,13 @@ def create_mcp_server(
             "status": "ready",
             "output_dir": str(output_dir.resolve()),
             "default_output": "chatgpt-delegation",
-            "connector_version": "0.2.0-dcfc-router.1",
+            "connector_version": "0.2.0-dcfc-router.2",
             "fixed_router": True,
             "text_editing": True,
             "text_editing_tools": [
                 "read_text_file",
+                "read_text_file_metadata",
+                "read_text_file_chunk",
                 "append_text_file",
                 "append_handoff_entry",
                 "replace_text_in_file",
@@ -594,6 +600,16 @@ def create_mcp_server(
     def read_text_file(filename: str) -> dict[str, Any]:
         """Read a UTF-8 text file relative to this project's output directory."""
         return read_text_file_operation(output_dir, filename, max_bytes=max_bytes)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def read_text_file_metadata(filename: str) -> dict[str, Any]:
+        """Read UTF-8 text file metadata without returning its content."""
+        return read_text_file_metadata_operation(output_dir, filename)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def read_text_file_chunk(filename: str, offset: int = 0, limit: int = 65536) -> dict[str, Any]:
+        """Read one bounded UTF-8 chunk from this project's output directory."""
+        return read_text_file_chunk_operation(output_dir, filename, offset=offset, limit=limit, max_bytes=max_bytes)
 
     @mcp.tool(annotations=local_report_write)
     def append_text_file(
@@ -738,11 +754,13 @@ def command_capabilities(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "status": "ok",
-                "connector_version": "0.2.0-dcfc-router.1",
+                "connector_version": "0.2.0-dcfc-router.2",
                 "fixed_router": True,
                 "text_editing": True,
                 "text_editing_tools": [
                     "read_text_file",
+                    "read_text_file_metadata",
+                    "read_text_file_chunk",
                     "append_text_file",
                     "append_handoff_entry",
                     "replace_text_in_file",
@@ -790,6 +808,7 @@ def command_serve(args: argparse.Namespace) -> int:
 def command_router(args: argparse.Namespace) -> int:
     from .router import create_router_mcp_server
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     mcp = create_router_mcp_server(args.config, max_bytes=args.max_bytes)
     print(
         json.dumps(

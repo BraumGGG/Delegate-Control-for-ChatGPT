@@ -43,6 +43,8 @@ HANDOFF_STATUSES = {
 }
 HANDOFF_PRIORITIES = {"P0", "P1", "P2", "P3", "N/A"}
 HANDOFF_LOCK_TIMEOUT_SECONDS = 10.0
+INLINE_READ_BYTES = 128 * 1024
+DEFAULT_CHUNK_BYTES = 64 * 1024
 
 
 def _utc_timestamp() -> str:
@@ -115,8 +117,106 @@ def _metadata(path: Path, raw: bytes, content: str) -> dict[str, Any]:
     }
 
 
+def _file_metadata(path: Path) -> dict[str, Any]:
+    """Read only metadata and validate UTF-8 without returning file content."""
+    digest = hashlib.sha256()
+    decoder = __import__("codecs").getincrementaldecoder("utf-8")()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(DEFAULT_CHUNK_BYTES):
+                digest.update(chunk)
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+    except FileNotFoundError as exc:
+        raise TextEditingError(f"file not found: {path.name}") from exc
+    except UnicodeDecodeError as exc:
+        raise TextEditingError("file is not valid UTF-8 text") from exc
+    except OSError as exc:
+        raise TextEditingError(f"could not read file: {exc}") from exc
+    stat = path.stat()
+    return {
+        "filename": str(path.name),
+        "path": str(path),
+        "bytes": stat.st_size,
+        "sha256": digest.hexdigest(),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+
+
+def read_text_file_metadata(output_dir: Path, filename: str) -> dict[str, Any]:
+    path = resolve_text_path(output_dir, filename)
+    return _file_metadata(path)
+
+
+def read_text_file_chunk(
+    output_dir: Path,
+    filename: str,
+    offset: int = 0,
+    limit: int = DEFAULT_CHUNK_BYTES,
+    max_bytes: int = 5 * 1024 * 1024,
+) -> dict[str, Any]:
+    if not isinstance(offset, int) or offset < 0:
+        raise TextEditingError("offset must be a non-negative integer")
+    if not isinstance(limit, int) or limit < 4 or limit > 262144:
+        raise TextEditingError("limit must be between 4 and 262144 bytes")
+    path = resolve_text_path(output_dir, filename)
+    metadata = _file_metadata(path)
+    if metadata["bytes"] > max_bytes:
+        raise TextEditingError(f"file is too large: {metadata['bytes']} bytes > {max_bytes} bytes")
+    if offset > metadata["bytes"]:
+        raise TextEditingError("offset is beyond the end of the file")
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            raw = handle.read(limit)
+    except OSError as exc:
+        raise TextEditingError(f"could not read file: {exc}") from exc
+    try:
+        decoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        if exc.start == 0 and offset > 0:
+            raise TextEditingError("offset must align to a UTF-8 character boundary") from exc
+        if exc.end == len(raw):
+            raw = raw[: exc.start]
+            decoded = raw.decode("utf-8")
+        else:
+            raise TextEditingError("file is not valid UTF-8 text") from exc
+    encoded = bytearray()
+    characters: list[str] = []
+    for character in decoded:
+        character_bytes = character.encode("utf-8")
+        if encoded and len(encoded) + len(character_bytes) > limit:
+            break
+        encoded.extend(character_bytes)
+        characters.append(character)
+    raw = bytes(encoded)
+    content = "".join(characters)
+    next_offset = offset + len(raw)
+    return {
+        **metadata,
+        "content": content,
+        "offset": offset,
+        "next_offset": next_offset,
+        "chunk_bytes": len(raw),
+        "eof": next_offset >= metadata["bytes"],
+    }
+
+
 def read_text_file(output_dir: Path, filename: str, max_bytes: int) -> dict[str, Any]:
     path = resolve_text_path(output_dir, filename)
+    metadata = _file_metadata(path)
+    if metadata["bytes"] > max_bytes:
+        raise TextEditingError(f"file is too large: {metadata['bytes']} bytes > {max_bytes} bytes")
+    if metadata["bytes"] > INLINE_READ_BYTES:
+        first = read_text_file_chunk(output_dir, filename, offset=0, limit=INLINE_READ_BYTES, max_bytes=max_bytes)
+        return {
+            **first,
+            "truncated": True,
+            "content_notice": "文件较大，已返回首段；请使用 read_text_file_chunk 继续读取。",
+        }
     content, raw = _read_file(path, max_bytes)
     return _metadata(path, raw, content)
 

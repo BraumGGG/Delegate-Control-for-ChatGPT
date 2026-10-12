@@ -10,6 +10,8 @@ from chatgpt_delegate.text_editing import (
     append_handoff_entry,
     delete_text_from_file,
     read_text_file,
+    read_text_file_chunk,
+    read_text_file_metadata,
     replace_text_in_file,
 )
 
@@ -47,6 +49,48 @@ class TextEditingTestCase(unittest.TestCase):
 
         self.assertEqual(result["content"], "标题\n正文")
         self.assertEqual(result["sha256"], hashlib.sha256("标题\n正文".encode()).hexdigest())
+
+    def test_metadata_does_not_return_content_and_chunk_reconstructs_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = ("标题-" + "正文\n") * 40000
+            path = root / "large.md"
+            path.write_text(expected, encoding="utf-8", newline="")
+
+            metadata = read_text_file_metadata(root, path.name)
+            chunks: list[str] = []
+            offset = 0
+            while True:
+                chunk = read_text_file_chunk(root, path.name, offset=offset, limit=97, max_bytes=10 * 1024 * 1024)
+                chunks.append(chunk["content"])
+                if chunk["eof"]:
+                    break
+                offset = chunk["next_offset"]
+
+        self.assertNotIn("content", metadata)
+        self.assertEqual(metadata["bytes"], len(expected.encode("utf-8")))
+        self.assertEqual(metadata["sha256"], hashlib.sha256(expected.encode("utf-8")).hexdigest())
+        self.assertEqual("".join(chunks), expected)
+
+    def test_large_legacy_read_is_bounded_and_continuable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "large.md"
+            path.write_text("x" * (128 * 1024 + 10), encoding="utf-8", newline="")
+            result = read_text_file(root, path.name, max_bytes=1024 * 1024)
+
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["chunk_bytes"], 128 * 1024)
+        self.assertEqual(result["next_offset"], 128 * 1024)
+        self.assertTrue(result["content_notice"])
+
+    def test_chunk_rejects_unaligned_utf8_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "utf8.md"
+            path.write_text("标题正文", encoding="utf-8", newline="")
+            with self.assertRaises(TextEditingError):
+                read_text_file_chunk(root, path.name, offset=1, limit=10)
 
     def test_rejects_absolute_parent_and_symlink_escape_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as outside_dir:

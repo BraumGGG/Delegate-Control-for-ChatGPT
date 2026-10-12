@@ -103,6 +103,9 @@ chatgpt-delegate read <task-id> --markdown
 | `list_results` | 读 | 列出已完成任务 |
 | `read_result` | 读 | 读取指定任务结果 |
 | `connector_status` | 读 | 返回 connector 状态，明确 `codex_execution=false` |
+| `read_text_file` | 读 | 读取小型 UTF-8 文本；大型文件返回首段、完整 SHA-256 和继续读取位置 |
+| `read_text_file_metadata` | 读 | 只返回文件路径、字节数、修改时间和 SHA-256，不返回正文 |
+| `read_text_file_chunk` | 读 | 按 UTF-8 字符边界读取指定偏移和上限的文件片段 |
 | `save_markdown_report` | 写 | 兼容旧研究报告 prompt |
 | `list_reports` | 读 | 兼容旧报告列表 |
 | `read_report` | 读 | 兼容旧报告读取 |
@@ -114,6 +117,15 @@ chatgpt-delegate read <task-id> --markdown
 - 解析后的路径必须停留在输出目录内。
 - 默认最大 Markdown 大小为 5MB。
 - `save_task_result` 默认覆盖同一任务的旧结果。
+
+大型文本读取流程：
+
+1. 先调用 `read_text_file_metadata(filename, project_id)`，记录返回的 `bytes`、`modified_at` 和 `sha256`。
+2. 从 `offset=0` 调用 `read_text_file_chunk(filename, offset, limit, project_id)`。
+3. 使用返回的 `next_offset` 继续调用，直到 `eof=true`；每个片段都带有同一个完整文件 SHA-256。
+4. 在本地或后续处理端重组片段后，使用元数据中的 SHA-256 校验完整内容。
+
+项目 Router 中的 `project_id` 是可选兼容参数，但当用户明确指定项目时必须传入，避免读取当前 active 项目的同名文件。`read_text_file` 对不超过 128 KiB 的文件仍返回完整正文；更大的文件只返回首段和继续读取提示。
 
 ## 旧报告命令
 
