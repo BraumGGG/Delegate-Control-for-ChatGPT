@@ -1,0 +1,20 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+
+const root = path.join(__dirname, '..');
+const dir = path.join(root, 'artifacts/build-tunnel-client');
+const executable = path.join(dir, 'tunnel-client.exe');
+const files = ['tunnel-client.exe', 'LICENSE', 'NOTICE', 'tunnel-client-v0.0.14-windows-amd64-licenses.txt', 'tunnel-client-v0.0.14-windows-amd64.spdx.json'];
+for (const file of files) assert(fs.statSync(path.join(dir, file)).size > 0, `Missing or empty Tunnel resource: ${file}`);
+assert.deepEqual(fs.readdirSync(dir).sort(), files.sort(), 'Unexpected files in Tunnel payload');
+const hash = crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex').toUpperCase();
+assert.equal(hash, 'FCC85A69EC0AD82518E4F8964F60C45E31787957782A0FC9C1B0C44E82D61B9B');
+const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
+assert.equal(config.bundle.resources['../artifacts/build-tunnel-client'], 'runtime/tunnel-client');
+const result = spawnSync(executable, ['--version'], { encoding: 'utf8', windowsHide: true });
+assert.equal(result.status, 0, result.stderr || result.error?.message);
+assert.match(result.stdout + result.stderr, /0\.0\.14/);
+console.log(JSON.stringify({ executable, sha256: hash, files, version: (result.stdout + result.stderr).trim() }, null, 2));

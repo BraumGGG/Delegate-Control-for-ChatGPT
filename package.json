@@ -1,7 +1,7 @@
 {
   "name": "delegate-control",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,8 @@
     "check:multi-project": "node scripts/multi-project-check.cjs",
     "check:managed-runtime": "node scripts/managed-runtime-check.cjs",
     "check:managed-proxy": "node scripts/managed-proxy-check.cjs",
-    "release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",
+    "check:managed-tunnel": "node scripts/managed-tunnel-check.cjs",
+    "release:build": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -69,14 +69,14 @@ fn evaluate(settings: &AppSettings, status: &DelegateStatus, endpoint: Option<St
         if proxy_exists && managed_proxy { Ready } else { Action },
         if proxy_exists && managed_proxy { "安装包内置 MCP Proxy 可用。" } else if !proxy_exists && managed_proxy { "安装包内置 MCP Proxy 缺失或损坏。" } else { "当前不是安装包内置 MCP Proxy；请重新安装 DCFC。" },
         "重新安装 DCFC 以恢复内置 MCP Proxy；普通用户不需要配置 Proxy 路径。"));
-    checks.push(check("dependencies", "外部运行依赖", "shared", None,
+    checks.push(check("dependencies", "运行依赖", "shared", None,
         if proxy_exists && tunnel_exists { Ready } else { Action },
         if proxy_exists && tunnel_exists && managed_proxy { "内置 MCP Proxy 与 Tunnel Client 均可用。" }
         else if !proxy_exists && managed_proxy { "内置 MCP Proxy 不存在。" }
         else if !managed_proxy { "MCP Proxy 不是安装包内置组件。" }
         else if !proxy_exists { "MCP Proxy 不存在。" }
         else { "Tunnel Client 不存在。" },
-        "重新安装 DCFC 或选择实际存在的 Tunnel Client。"));
+        "安装包内置 Tunnel Client 缺失时请重新安装 DCFC；自定义路径请确认文件存在。"));
 
     let magic_config_valid = settings.network_mode == crate::config::NetworkMode::Direct || (settings.proxy_host == "127.0.0.1" && settings.proxy_port > 0);
     checks.push(check("magic", "Magic 本机代理", "shared", None,

@@ -21,9 +21,12 @@ if (-not (Test-Path (Join-Path $venv "Scripts\python.exe"))) {
 
 $python = Join-Path $venv "Scripts\python.exe"
 & $python -m pip install --disable-pip-version-check --upgrade pip setuptools wheel | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Python build tooling installation failed.' }
 & $python -m pip install --disable-pip-version-check "fastmcp>=2,<4" "mcp[cli]>=1.24,<2" "pyinstaller>=6,<7" | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Connector dependency installation failed.' }
 $env:PYTHONPATH = Join-Path $vendor "src"
 & $python -m unittest discover -s (Join-Path $vendor "tests") -p "test_*.py" | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Connector regression tests failed.' }
 
 & $python -m PyInstaller `
     --noconfirm `
@@ -37,6 +40,7 @@ $env:PYTHONPATH = Join-Path $vendor "src"
     --collect-all fastmcp `
     --collect-all mcp `
     (Join-Path $vendor "build_entry.py") | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Connector packaging failed; refusing to reuse an older runtime.' }
 
 $exe = Join-Path $output "chatgpt-delegate-edit\chatgpt-delegate-edit.exe"
 if (-not (Test-Path $exe)) {

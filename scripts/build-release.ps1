@@ -14,6 +14,7 @@ if (-not (Test-Path $runtimeExe)) {
 }
 
 & (Join-Path $PSScriptRoot "fetch-mcp-proxy.ps1")
+& (Join-Path $PSScriptRoot "fetch-tunnel-client.ps1")
 
 Push-Location $root
 try {
@@ -21,6 +22,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Managed runtime integrity check failed." }
     & npm.cmd run check:managed-proxy
     if ($LASTEXITCODE -ne 0) { throw "Managed MCP Proxy integrity check failed." }
+    & npm.cmd run check:managed-tunnel
+    if ($LASTEXITCODE -ne 0) { throw "Managed Tunnel Client integrity check failed." }
     & npm.cmd run tauri -- build
     if ($LASTEXITCODE -ne 0) { throw "Tauri production build failed." }
 }

@@ -1,9 +1,8 @@
 # Third-Party Notices
 
-This file describes the Gate A source and dependency boundary. It is not yet
-the complete license archive for a public installer. The installer is not
-approved for public release until a bill of materials and all required notices
-are checked against its actual contents.
+This file describes the source dependencies and pinned executables distributed
+with DCFC. Bundled executable notices are shipped alongside each executable;
+this summary does not replace their full license files or transitive notices.
 
 ## Included in this repository
 
@@ -19,10 +18,11 @@ are checked against its actual contents.
   than a complete Python lock file. A frozen dependency/notice inventory is
   required before distributing a Connector binary.
 
-## External executables, not bundled by DCFC
+## Bundled executables
 
-The Gate A delivery model is user-supplied executable paths. The NSIS/MSI
-bundle must not contain or download these programs:
+The NSIS/MSI installers bundle the following pinned, unmodified executables.
+The build scripts verify archive and executable SHA-256 values. Installing
+DCFC does not download these dependencies at first run.
 
 - `mcp-proxy.exe`: `joshrotenberg/mcp-proxy` v0.4.3, distributed upstream with
   `LICENSE-APACHE` (Apache-2.0) and `LICENSE-MIT` (MIT). The locally tested exe
@@ -38,13 +38,15 @@ bundle must not contain or download these programs:
   and matches the official v0.0.14 archive exactly. Upstream maintains its
   releases and security updates; DCFC maintainers own integration testing and
   supported-version guidance. Its release archive also contains
-  `cloudflared.exe`; do not copy it into DCFC's installer without a separate
-  artifact/license audit.
+  `cloudflared.exe`; DCFC does not include it. The Tunnel build extracts only
+  `tunnel-client.exe`, `LICENSE`, `NOTICE`, the dependency license report and
+  SPDX SBOM into `runtime/tunnel-client`. The archive SHA-256 is
+  `784AB8DA7B5A88F0109F1FD8AAF0A1C86067430B896DDDF307EF7E3CC49FA1A5`.
 
-Those licenses permit redistribution subject to their terms, but Gate A
-deliberately does not redistribute either executable. Changing to a bundled
-model requires a separately reviewed installer inventory, complete notices,
-checksums, supply-chain update policy and installed-machine tests.
+MCP Proxy is installed at `runtime/mcp-proxy` with its Apache and MIT notices.
+Release maintainers must review upstream changes and security updates, pin
+new hashes explicitly, retain notices and run the managed-resource and
+installed-payload tests before changing a supported dependency version.
 
 The local Magic HTTP proxy is user-supplied software. DCFC does not endorse or
 redistribute a particular proxy product.

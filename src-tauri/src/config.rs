@@ -99,11 +99,28 @@ pub fn bundled_mcp_proxy_executable_from_resource(resource_dir: &Path) -> PathBu
     resource_dir.join("runtime").join("mcp-proxy").join("mcp-proxy.exe")
 }
 
+pub fn bundled_tunnel_executable_from_resource(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("runtime").join("tunnel-client").join("tunnel-client.exe")
+}
+
+fn uses_managed_tunnel_default(path: &str) -> bool {
+    let normalized = normalized_path(path);
+    let legacy = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default())
+        .join(".local").join("bin").join("tunnel-client.exe");
+    normalized.is_empty()
+        || normalized == normalized_path(&legacy.to_string_lossy())
+        || normalized.ends_with("\\tunnel-client\\install\\tunnel-client.exe")
+        || normalized.ends_with("\\runtime\\tunnel-client\\tunnel-client.exe")
+}
+
 fn uses_managed_mcp_default(path: &str) -> bool {
     let normalized = path.replace('/', "\\").to_ascii_lowercase();
     let current_default = bundled_mcp_executable().to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let legacy_default = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default())
+        .join(".local").join("bin").join("chatgpt-delegate.exe");
     normalized.is_empty()
         || normalized == current_default
+        || normalized == normalized_path(&legacy_default.to_string_lossy())
         || normalized.ends_with("\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe")
 }
 
@@ -130,13 +147,14 @@ pub fn is_managed_mcp_proxy_path(path: &str) -> bool {
 }
 
 pub fn apply_managed_runtime_path(settings: &mut AppSettings, resource_dir: &Path) {
-    if (settings.projects.is_empty() || is_legacy_managed_mcp_path(&settings.mcp_executable))
-        && (uses_managed_mcp_default(&settings.mcp_executable) || is_legacy_managed_mcp_path(&settings.mcp_executable))
-    {
+    if uses_managed_mcp_default(&settings.mcp_executable) || is_legacy_managed_mcp_path(&settings.mcp_executable) {
         settings.mcp_executable = bundled_mcp_executable_from_resource(resource_dir).to_string_lossy().to_string();
     }
     if uses_managed_mcp_proxy_default(&settings.proxy_executable) {
         settings.proxy_executable = bundled_mcp_proxy_executable_from_resource(resource_dir).to_string_lossy().to_string();
+    }
+    if uses_managed_tunnel_default(&settings.tunnel_executable) {
+        settings.tunnel_executable = bundled_tunnel_executable_from_resource(resource_dir).to_string_lossy().to_string();
     }
 }
 
@@ -147,6 +165,8 @@ fn empty_settings() -> AppSettings {
     settings.profile_name.clear();
     settings.mcp_executable = bundled_mcp_executable().to_string_lossy().to_string();
     settings.proxy_executable = bundled_mcp_proxy_executable().to_string_lossy().to_string();
+    let resource_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)).unwrap_or_default();
+    settings.tunnel_executable = bundled_tunnel_executable_from_resource(&resource_dir).to_string_lossy().to_string();
     settings
 }
 
@@ -365,8 +385,9 @@ pub fn load_application_settings_with_resource(path: &Path, resource_dir: Option
     if let Some(resource_dir) = resource_dir {
         let previous_mcp = settings.mcp_executable.clone();
         let previous_proxy = settings.proxy_executable.clone();
+        let previous_tunnel = settings.tunnel_executable.clone();
         apply_managed_runtime_path(&mut settings, resource_dir);
-        changed |= settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy;
+        changed |= settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy || settings.tunnel_executable != previous_tunnel;
     }
     let stable_root = path.parent().unwrap_or_else(|| Path::new("."));
     let stable_proxy = stable_root.join("mcp-proxy.toml").to_string_lossy().to_string();
@@ -878,9 +899,11 @@ mod tests {
         assert_eq!(custom.mcp_executable, r"C:\Tools\custom-connector.exe");
 
         let mut existing = AppSettings::default();
-        let original = existing.mcp_executable.clone();
         apply_managed_runtime_path(&mut existing, &resource_dir);
-        assert_eq!(existing.mcp_executable, original);
+        assert_eq!(Path::new(&existing.mcp_executable), bundled_mcp_executable_from_resource(&resource_dir));
+        existing.mcp_executable = r"C:\Old\runtime\chatgpt-delegate-edit\chatgpt-delegate-edit.exe".to_string();
+        apply_managed_runtime_path(&mut existing, &resource_dir);
+        assert_eq!(Path::new(&existing.mcp_executable), bundled_mcp_executable_from_resource(&resource_dir));
     }
 
     #[test]
@@ -913,6 +936,23 @@ mod tests {
         custom.proxy_executable = r"C:\Tools\custom-mcp-proxy.exe".to_string();
         apply_managed_runtime_path(&mut custom, &resource_dir);
         assert_eq!(custom.proxy_executable, r"C:\Tools\custom-mcp-proxy.exe");
+    }
+
+    #[test]
+    fn managed_tunnel_paths_follow_install_directory_and_preserve_custom_paths() {
+        let resource_dir = PathBuf::from(r"D:\安装 测试\DCFC");
+        let mut settings = AppSettings::default();
+        let projects = serde_json::to_value(&settings.projects).unwrap();
+        let default_tunnel = settings.tunnel_executable.clone();
+        for value in [String::new(), default_tunnel, r"C:\Old\runtime\tunnel-client\tunnel-client.exe".to_string(), r"D:\tunnel-client\install\tunnel-client.exe".to_string()] {
+            settings.tunnel_executable = value;
+            apply_managed_runtime_path(&mut settings, &resource_dir);
+            assert_eq!(Path::new(&settings.tunnel_executable), bundled_tunnel_executable_from_resource(&resource_dir));
+            assert_eq!(serde_json::to_value(&settings.projects).unwrap(), projects);
+        }
+        settings.tunnel_executable = r"E:\自定义 工具\tunnel-client.exe".to_string();
+        apply_managed_runtime_path(&mut settings, &resource_dir);
+        assert_eq!(settings.tunnel_executable, r"E:\自定义 工具\tunnel-client.exe");
     }
 
     #[test]

@@ -524,3 +524,4 @@ body { font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-ser
 .doctor-error { padding: 12px; color: #b91c1c; background: #fef2f2; font-size: 12px; }
 @media (max-width: 900px) { .doctor-view { padding: 18px; }.doctor-section-head { flex-wrap: wrap; } }
 @media (max-width: 640px) { .public-url-editor { grid-template-columns: 1fr; }.public-url-editor .secondary-button { width: 100%; }.doctor-row { grid-template-columns: 25px minmax(0,1fr); }.doctor-state { grid-column: 2; }.doctor-view .view-heading { align-items: stretch; }.doctor-view .view-heading button { align-self: flex-start; } }
+.log-directory { display: block; overflow-wrap: anywhere; color: #64748b; font-size: 12px; margin-bottom: 8px; }

@@ -55,8 +55,9 @@ impl AppState {
         let mut settings = self.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?;
         let previous_mcp = settings.mcp_executable.clone();
         let previous_proxy = settings.proxy_executable.clone();
+        let previous_tunnel = settings.tunnel_executable.clone();
         apply_managed_runtime_path(&mut settings, &resource_dir);
-        if settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy {
+        if settings.mcp_executable != previous_mcp || settings.proxy_executable != previous_proxy || settings.tunnel_executable != previous_tunnel {
             save_settings(&self.settings_path, &settings)?;
         }
         Ok(())
@@ -99,6 +100,7 @@ pub fn run() {
             commands::save_runtime_key,
             commands::read_logs,
             commands::open_log_directory,
+            commands::get_log_directory,
         ])
         .setup(|app| {
             let resource_dir = app.path().resource_dir().map_err(|error| format!("无法解析应用资源目录：{error}"))?;

@@ -20,5 +20,6 @@ export const api = {
   migrateProjectKey: (oldProjectId: string, newProjectId: string) => invoke<AppSettings>("migrate_project_key", { oldProjectId, newProjectId }),
   saveRuntimeKey: (key: string) => invoke<void>("save_runtime_key", { key }),
   readLogs: (source: LogSource, projectId?: string) => invoke<string>("read_logs", { source, projectId: projectId ?? null }),
-  openLogDirectory: () => invoke<void>("open_log_directory"),
+  getLogDirectory: (source: LogSource, projectId?: string) => invoke<string>("get_log_directory", { source, projectId: projectId ?? null }),
+  openLogDirectory: (source: LogSource, projectId?: string) => invoke<void>("open_log_directory", { source, projectId: projectId ?? null }),
 };

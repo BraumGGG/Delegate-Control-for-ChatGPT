@@ -181,12 +181,20 @@ pub fn save_runtime_key(key: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn read_logs(source: String, project_id: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
-    state.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.read_logs(&source, project_id.as_deref())
+    let settings = state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+    state.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.read_logs(&source, project_id.as_deref(), &settings)
 }
 
 #[tauri::command]
-pub fn open_log_directory(state: State<'_, AppState>) -> Result<(), String> {
-    let path = state.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.log_dir().to_path_buf();
+pub fn get_log_directory(source: String, project_id: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let settings = state.settings.lock().map_err(|_| "设置状态已损坏。".to_string())?.clone();
+    let path = state.manager.lock().map_err(|_| "进程状态已损坏。".to_string())?.log_directory(&source, project_id.as_deref(), &settings)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn open_log_directory(source: String, project_id: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let path = std::path::PathBuf::from(get_log_directory(source, project_id, state)?);
     std::fs::create_dir_all(&path).map_err(|error| format!("无法创建日志目录：{error}"))?;
     std::process::Command::new("explorer.exe").arg(path).spawn().map_err(|error| format!("无法打开日志目录：{error}"))?;
     Ok(())

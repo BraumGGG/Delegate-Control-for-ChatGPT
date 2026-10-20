@@ -271,13 +271,29 @@ impl ProcessManager {
         Ok(self.status(settings))
     }
 
-    pub fn read_logs(&self, source: &str, project_id: Option<&str>) -> Result<String, String> {
-        let (names, directory) = match source {
-            "mcp" => (vec!["mcp.stderr.log", "mcp.stdout.log"], project_id.map(|id| self.log_dir.join(id)).unwrap_or_else(|| self.log_dir.clone())),
-            "proxy" => (vec!["proxy.stderr.log", "proxy.stdout.log"], self.log_dir.clone()),
-            "router" => (vec!["router.stderr.log", "router.stdout.log"], self.log_dir.clone()),
-            "tunnel" => (vec!["tunnel.stderr.log", "tunnel.log", "tunnel.stdout.log"], self.log_dir.clone()),
-            "startup" => (vec!["startup-diagnostics.jsonl"], self.log_dir.clone()),
+    pub fn log_directory(&self, source: &str, project_id: Option<&str>, settings: &AppSettings) -> Result<PathBuf, String> {
+        match source {
+            "mcp" => {
+                let id = project_id.or(settings.active_project_id.as_deref()).ok_or_else(|| "请选择日志项目。".to_string())?;
+                crate::config::validate_project_key(id)?;
+                if !settings.projects.iter().any(|project| project.id == id) {
+                    return Err(format!("找不到日志项目：{id}。"));
+                }
+                Ok(self.log_dir.join(id))
+            }
+            "proxy" | "router" | "tunnel" | "startup" => Ok(self.log_dir.clone()),
+            _ => Err("未知日志类型。".to_string()),
+        }
+    }
+
+    pub fn read_logs(&self, source: &str, project_id: Option<&str>, settings: &AppSettings) -> Result<String, String> {
+        let directory = self.log_directory(source, project_id, settings)?;
+        let names = match source {
+            "mcp" => vec!["mcp.stderr.log", "mcp.stdout.log"],
+            "proxy" => vec!["proxy.stderr.log", "proxy.stdout.log"],
+            "router" => vec!["router.stderr.log", "router.stdout.log"],
+            "tunnel" => vec!["tunnel.stderr.log", "tunnel.log", "tunnel.stdout.log"],
+            "startup" => vec!["startup-diagnostics.jsonl"],
             _ => return Err("未知日志类型。".to_string()),
         };
         let mut combined = String::new();
@@ -898,6 +914,20 @@ mod tests {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .expect("test child should start")
+    }
+
+    #[test]
+    fn log_directory_matches_read_selection_and_rejects_unknown_projects() {
+        let manager = ProcessManager::new(PathBuf::from(r"D:\测试 日志\logs"));
+        let settings = AppSettings::default();
+        assert_eq!(manager.log_directory("mcp", Some("default"), &settings).unwrap(), manager.log_dir.join("default"));
+        assert_eq!(manager.log_directory("mcp", None, &settings).unwrap(), manager.log_dir.join("default"));
+        for source in ["proxy", "router", "tunnel", "startup"] {
+            assert_eq!(manager.log_directory(source, Some("default"), &settings).unwrap(), manager.log_dir);
+        }
+        assert!(manager.log_directory("mcp", Some("missing"), &settings).is_err());
+        assert!(manager.log_directory("mcp", Some("../escape"), &settings).is_err());
+        assert!(manager.log_directory("unknown", None, &settings).is_err());
     }
 
     #[test]

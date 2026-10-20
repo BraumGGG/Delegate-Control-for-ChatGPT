@@ -12,7 +12,7 @@ const emptySettings = {
   proxy_host: "127.0.0.1", proxy_port: 7877, mcp_proxy_host: "127.0.0.1", mcp_proxy_port: 8100, router_port: 8101,
   health_host: "127.0.0.1", health_port: 8080, profile_name: "", tunnel_id: "",
   mcp_executable: "C:\\Program Files\\DCFC\\runtime\\chatgpt-delegate-edit\\chatgpt-delegate-edit.exe",
-  proxy_executable: "C:\\Program Files\\DCFC\\runtime\\mcp-proxy\\mcp-proxy.exe", tunnel_executable: "C:\\Tools\\tunnel-client.exe",
+  proxy_executable: "C:\\Program Files\\DCFC\\runtime\\mcp-proxy\\mcp-proxy.exe", tunnel_executable: "C:\\Program Files\\DCFC\\runtime\\tunnel-client\\tunnel-client.exe",
   proxy_config_path: "C:\\Users\\Test\\.delegate-control\\mcp-proxy.toml",
   router_config_path: "C:\\Users\\Test\\.delegate-control\\router-projects.json",
   projects: [], active_project_id: null,
@@ -38,6 +38,10 @@ async function waitForServer() {
 
 async function installMock(page, readiness = ready) {
   await page.addInitScript(({ empty, readyState, initialStatus }) => {
+    if (!localStorage.getItem('__dcfc_stale_paths_tested')) {
+      localStorage.setItem('dcfc.first-run-wizard.v1', JSON.stringify({proxyExecutable:'C:\\Missing\\proxy.exe', tunnelExecutable:'C:\\Missing\\tunnel.exe'}));
+      localStorage.setItem('__dcfc_stale_paths_tested', '1');
+    }
     let callbackId = 1;
     let currentSettings = JSON.parse(localStorage.getItem("__dcfc_onboarding_settings") || "null") || structuredClone(empty);
     let currentStatus = structuredClone(initialStatus);
@@ -59,11 +63,14 @@ async function installMock(page, readiness = ready) {
         if (command === "check_runtime_readiness") {
           const candidate = args.settings || currentSettings;
           const pathsReady = !String(candidate.proxy_executable || "").includes("Missing") && !String(candidate.tunnel_executable || "").includes("Missing");
-          return { ...structuredClone(readyState), proxy_available: pathsReady, tunnel_available: pathsReady };
+          return { ...structuredClone(readyState), proxy_available: readyState.proxy_available && pathsReady, tunnel_available: readyState.tunnel_available && pathsReady };
         }
         if (command === "detect_magic_port") return { host: "127.0.0.1", configured_port: 7877, listening: true, detected_port: 7877, detail: "已检测到本机代理监听 127.0.0.1:7877。" };
         if (command === "open_external_url") { window.__openedExternalUrl = args.url; return null; }
         if (command === "get_settings") return structuredClone(currentSettings);
+        if (command === "get_log_directory") return `C:\\Users\\Test\\.delegate-control\\logs${args.source === 'mcp' ? '\\' + (args.projectId || currentSettings.active_project_id) : ''}`;
+        if (command === "read_logs") return "Log test content";
+        if (command === "open_log_directory") { window.__openedLogArgs = args; return null; }
         if (command === "save_runtime_key") { currentStatus.credential_configured = true; return null; }
         if (command === "save_settings") {
           currentSettings = structuredClone(args.settings);
@@ -90,15 +97,22 @@ async function installMock(page, readiness = ready) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   try {
     const context = await browser.newContext({ viewport: { width: 1180, height: 800 } });
+    context.setDefaultTimeout(60000);
     const page = await context.newPage();
+    page.on('pageerror', error => console.error('onboarding pageerror:', error.message));
+    page.on('console', message => { if (message.type() === 'error') console.error('onboarding console:', message.text()); });
     await installMock(page);
     await page.goto(appUrl, { waitUntil: "commit", timeout: 10000 });
 
-    await page.getByRole("heading", { name: "运行依赖" }).waitFor();
+    try { await page.getByRole("heading", { name: "运行依赖" }).waitFor(); }
+    catch (error) { console.error('onboarding body:', await page.locator('body').innerText()); throw error; }
+    console.log('onboarding: dependencies');
     assert.equal(await page.getByText("DCFC 内置运行组件").count(), 1);
     assert.equal(await page.getByRole("button", { name: "选择MCP Connector" }).count(), 0);
 
-    await page.getByLabel("Tunnel Client路径").fill("C:\\Tools\\tunnel-client.exe");
+    assert.equal(await page.getByLabel("Tunnel Client路径").count(), 0);
+    await page.locator('.wizard-dependency code').filter({ hasText: emptySettings.tunnel_executable }).waitFor();
+    assert.equal(await page.locator('.wizard-dependency code').filter({ hasText: 'Missing' }).count(), 0);
 
     await page.getByRole("button", { name: "下一步" }).click();
     await page.getByRole("heading", { name: "OpenAI 连接" }).waitFor();
@@ -130,6 +144,7 @@ async function installMock(page, readiness = ready) {
     await page.getByText("本地配置检查").waitFor();
     await page.getByRole("button", { name: "保存本地配置" }).click();
     await page.getByText("本机配置已保存").waitFor();
+    console.log('onboarding: saved');
     assert.equal(await page.locator(".product-name").filter({ hasText: "首页" }).count(), 1);
     assert.equal(await page.locator(".lrow").filter({ hasText: "Demo Project" }).count(), 1);
 
@@ -137,6 +152,16 @@ async function installMock(page, readiness = ready) {
     assert.equal(await page.getByText("完成本机配置后再开始连接").count(), 0);
     assert.equal(await page.locator(".lrow").filter({ hasText: "Demo Project" }).count(), 1);
     assert.equal(await page.getByText("首次运行配置").count(), 0);
+
+    await page.getByRole('button', { name: '运行日志', exact: true }).click();
+    console.log('onboarding: logs');
+    await page.locator('.log-directory').filter({ hasText: '\\logs\\demo-project' }).waitFor();
+    await page.getByRole('button', { name: '打开目录', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => window.__openedLogArgs), {source:'mcp',projectId:'demo-project'});
+    await page.getByRole('button', { name: 'Router MCP', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.log-directory')?.textContent === 'C:\\Users\\Test\\.delegate-control\\logs');
+    await page.getByRole('button', { name: '打开目录', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => window.__openedLogArgs), {source:'router',projectId:null});
 
     await context.close();
 
@@ -150,6 +175,14 @@ async function installMock(page, readiness = ready) {
     assert.equal(await missingPage.getByRole("button", { name: "选择MCP Connector" }).count(), 0);
     await missingContext.close();
 
+    const tunnelContext = await browser.newContext();
+    tunnelContext.setDefaultTimeout(60000);
+    const tunnelPage = await tunnelContext.newPage();
+    await installMock(tunnelPage, { ...ready, tunnel_available: false });
+    await tunnelPage.goto(appUrl, { waitUntil: 'networkidle' });
+    await tunnelPage.getByText('安装包内置 Tunnel Client 缺失或损坏，请重新安装 DCFC。', {exact:true}).waitFor();
+    await tunnelContext.close();
+
     const responsiveContext = await browser.newContext({ viewport: { width: 900, height: 800 } });
     const responsivePage = await responsiveContext.newPage();
     await installMock(responsivePage);
@@ -159,7 +192,7 @@ async function installMock(page, readiness = ready) {
     assert.ok(widthCheck.scrollWidth <= widthCheck.viewport + 1, `responsive horizontal overflow: ${JSON.stringify(widthCheck)}`);
     await responsiveContext.close();
 
-    console.log(JSON.stringify({ status: "ok", checks: ["wizard-visible", "invalid-input", "cancel-resume", "completion", "restart-bypass", "internal-connector-present", "internal-connector-missing", "responsive-900"] }, null, 2));
+    console.log(JSON.stringify({ status: "ok", checks: ["wizard-visible", "invalid-input", "cancel-resume", "completion", "restart-bypass", "internal-connector-present", "internal-connector-missing", "managed-tunnel-missing", "stale-draft-paths-ignored", "project-log-directory", "shared-log-directory", "responsive-900"] }, null, 2));
   } finally {
     await browser.close();
     if (server && !server.killed) server.kill();

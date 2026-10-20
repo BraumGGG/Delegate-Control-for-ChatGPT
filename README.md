@@ -8,7 +8,7 @@ Delegate Control for ChatGPT（DCFC）是一款 Windows 桌面控制台，通过
 
 本项目是第三方工具，并非 OpenAI 或 ChatGPT 官方产品。它不是另一个模型聊天客户端，也不提供通用远程桌面或任意命令执行能力。
 
-当前源码与候选安装包版本为 **0.1.12**。本机构建与回归检查已通过，但 Direct/Magic 双模式的最终用户真机端到端验收仍待完成；本机就绪和页面截图不能证明外部 Connector 已成功调用。
+当前源码与候选安装包版本为 **0.1.14**。安装包内置 Connector、MCP Proxy 和 Tunnel Client；实际网络与 Connector 可用性需结合本机诊断和真实调用判断。
 
 ## 解决什么问题
 
@@ -129,7 +129,7 @@ Public URL 只作为外部 Connector 注册地址信息，不是本机启动条�
 
 ## 使用流程
 
-1. 安装 DCFC，按首次配置向导检查内置运行组件并选择实际 Tunnel Client。
+1. 安装 DCFC，按首次配置向导检查内置 Connector、MCP Proxy 和 Tunnel Client，无需手动复制 exe。
 2. 配置当前组织的 Runtime API Key 与 Tunnel ID；不要把密钥发到聊天、截图或日志。
 3. 根据实际网络选择 Direct 或 Magic；Magic 填写本机代理的实际监听端口。
 4. 创建项目，确认稳定 project_id、绝对输出目录、独立端口和启用状态，保存设置。
@@ -144,10 +144,12 @@ Public URL 只作为外部 Connector 注册地址信息，不是本机启动条�
 - Windows 10/11 x64。
 - 支持所需外部 Connector 功能的 ChatGPT 使用环境及有效的 Tunnel 配置；具体外部功能可用性由平台决定。
 - `chatgpt-delegate-edit.exe` 与 `mcp-proxy.exe`：安装包内置，普通用户不需要自行安装或选择其路径；缺失时重新安装可信安装包。
-- `tunnel-client.exe`：由用户单独提供，首次向导选择实际文件。来源为 [openai/tunnel-client](https://github.com/openai/tunnel-client)；此前验证版本为 v0.0.14，不等于承诺兼容任意后续版本。
+- `tunnel-client.exe`：安装包内置 [openai/tunnel-client v0.0.14](https://github.com/openai/tunnel-client/releases/tag/v0.0.14)，固定 SHA-256 并附许可证、NOTICE、依赖许可证和 SBOM。仅包含 Tunnel Client，不包含 cloudflared；升级保留已有自定义工具路径。
 - 本机 Magic HTTP/混合代理：仅 Magic 模式需要，Direct 不依赖其端口。
 
 安装版用户无需准备源码构建用的 Node.js、Rust、Python。不要直接双击 MCP Proxy exe 后把“reading proxy.toml”当成受管启动故障；DCFC 会生成配置并显式传入路径。
+
+程序路径以当前安装目录的 `runtime/` 为默认来源；旧受管路径随安装目录迁移，自定义路径不被覆盖。设置及日志位于当前 Windows 用户的 `.delegate-control/` 下，项目文档只写入对应项目配置的绝对输出目录。运行日志页面显示后端实际读取的目录，“打开目录”使用相同日志来源和项目，项目 MCP 日志打开对应项目子目录，共享组件日志打开总日志目录。
 
 ## 本地开发与构建
 
@@ -159,6 +161,7 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run check:multi-project
 npm run check:managed-proxy
+npm run check:managed-tunnel
 npm run check:onboarding
 npm run check:setup-doctor
 npm run tauri -- dev
@@ -199,7 +202,7 @@ src-tauri/target/release/bundle/msi/
 
 项目使用 [MIT License](LICENSE)。第三方组件保留各自许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-0.1.2 是此前用户接受的冻结回退基线，0.1.12 仍为候选行为。回退前备份当前配置和日志，使用保留的原安装包并核对原校验值；基线记录不等于已证明当前机器仍持有可用旧包，不要重打旧版本冒充原验收包。
+0.1.2 是此前用户接受的冻结回退基线。回退前备份当前配置和日志，使用保留的原安装包并核对原校验值；基线记录不等于已证明当前机器仍持有可用旧包，不要重打旧版本冒充原验收包。
 
 多项目改造前的源码保护标签为 `baseline-2026-09-22`。仅在当前工作已保存后，才基于该标签创建回退分支：
 
