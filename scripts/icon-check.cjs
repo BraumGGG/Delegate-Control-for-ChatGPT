@@ -10,6 +10,9 @@ const ico = fs.readFileSync(path.join(root, 'src-tauri/icons/icon.ico'));
 assert.equal(ico.readUInt16LE(2), 1);
 const sizes = Array.from({length: ico.readUInt16LE(4)}, (_, i) => ico[6 + i * 16] || 256);
 assert(sizes.includes(32) && sizes.includes(256), 'Windows ICO must include small and large sizes');
+const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
+assert.equal(config.bundle.windows.nsis.installerIcon, 'icons/icon.ico');
+assert.equal(config.bundle.windows.nsis.uninstallerIcon, 'icons/icon.ico');
 
 (async () => {
   const browser = await chromium.launch({channel:'msedge', headless:true});
