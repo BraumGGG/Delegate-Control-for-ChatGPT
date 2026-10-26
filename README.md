@@ -8,7 +8,7 @@ Delegate Control for ChatGPT（DCFC）是一款 Windows 桌面控制台，通过
 
 本项目是第三方工具，并非 OpenAI 或 ChatGPT 官方产品。它不是另一个模型聊天客户端，也不提供通用远程桌面或任意命令执行能力。
 
-当前源码与候选安装包版本为 **0.1.14**。安装包内置 Connector、MCP Proxy 和 Tunnel Client；实际网络与 Connector 可用性需结合本机诊断和真实调用判断。
+当前源码与安装包版本为 **0.1.15**。本版统一更新 Windows 应用、托盘、侧栏与首次配置向导图标。安装包内置 Connector、MCP Proxy 和 Tunnel Client；实际网络与 Connector 可用性需结合本机诊断和真实调用判断。
 
 ## 解决什么问题
 

@@ -8,6 +8,7 @@ import { getLegacyProjectKeyProposal, PROJECT_KEY_PATTERN, suggestProjectKey, va
 import type { AppSettings, DelegateStatus, DoctorReport, LogSource, MagicPortProbe, ProjectConfig, ProjectRuntimeStatus, RuntimeReadiness, ViewId } from "./types";
 import runtimeApiKeysNav from "./assets/runtime-api-keys-nav.png";
 import runtimeApiKeysCreate from "./assets/runtime-api-keys-create.png";
+import dcfcIcon from "./assets/dcfc-icon.png";
 
 const EMPTY_STATUS: DelegateStatus = {
   overall: "stopped", proxy_ready: false, router_ready: false, mcp_proxy_ready: false, mcp_ready: false, tunnel_ready: false, proxy_pid: null, router_pid: null, mcp_pid: null, tunnel_pid: null, credential_configured: false, text_editing_available: false, connector_capability_message: "正在检测 Connector 文件编辑能力", message: "正在读取本机状态", projects: [],
@@ -515,7 +516,7 @@ function App() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand-lockup" aria-label="Delegate Control for ChatGPT"><div className="brand-mark"><Activity size={18} strokeWidth={2.2} /></div><div className="brand-copy"><strong>Delegate Control</strong><span>for ChatGPT</span></div></div>
+        <div className="brand-lockup" aria-label="Delegate Control for ChatGPT"><div className="brand-mark"><img src={dcfcIcon} alt="" /></div><div className="brand-copy"><strong>Delegate Control</strong><span>for ChatGPT</span></div></div>
         <nav className="nav-list" aria-label="主导航">
           {NAV_ITEMS.map((item) => { const Icon = item.icon; const ariaLabel = item.id === "settings" ? "设置" : item.label; return <button key={item.id} className={`nav-button ${view === item.id ? "is-active" : ""}`} onClick={() => setView(item.id)} title={item.label} aria-label={ariaLabel}><Icon size={19} strokeWidth={1.8} /><span className="nav-label">{item.label}</span></button>; })}
         </nav>
@@ -737,7 +738,7 @@ function OnboardingWizard({
   return <div className="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
     <div className="wizard-shell">
       <header className="wizard-header">
-        <div className="wizard-brand"><div className="brand-mark"><Activity size={18} /></div><div><div className="wizard-kicker">DELEGATE CONTROL</div><strong>首次运行配置</strong></div></div>
+        <div className="wizard-brand"><div className="brand-mark"><img src={dcfcIcon} alt="" /></div><div><div className="wizard-kicker">DELEGATE CONTROL</div><strong>首次运行配置</strong></div></div>
         <button className="icon-button" onClick={onCancel} title="稍后配置" aria-label="稍后配置"><span aria-hidden>×</span></button>
       </header>
       <div className="wizard-progress" aria-label="配置进度">{steps.map(([number, label, detail], index) => <div className={`wizard-step ${draft.step === index ? "is-current" : ""} ${draft.step > index ? "is-complete" : ""}`} key={number}><span>{draft.step > index ? "✓" : number}</span><div><strong>{label}</strong><small>{detail}</small></div></div>)}</div>
